@@ -1,6 +1,6 @@
 ---
 name: filo
-description: Connect this session to other LLM agents (Claude, Codex, agy, others) working in the same directory through filo. Run it as the first command of a session to get connected, whenever the user asks you to message or coordinate with another agent, and when a message starting with "[filo]" arrives and you need to know how to answer it.
+description: Connect this session to other LLM agents (Claude, Codex, agy, OpenCode, others) working in the same directory through filo. Run it as the first command of a session to get connected, whenever the user asks you to message or coordinate with another agent, and when a message starting with "[filo]" arrives and you need to know how to answer it.
 ---
 
 # filo
@@ -61,6 +61,12 @@ and stays untrusted (see Rules).
   you are idle, one starts a turn on its own; when you are busy, it reaches you when
   the current step ends.
 
+- **OpenCode:** the plugin does the connecting. Call the `filo_join` tool, with no
+  parameters of your own: it already has what the user typed after `/filo`, and its
+  answer tells you your name, your profile and who is connected. Messages arrive as
+  user messages that start with `[filo] Message from <name>:` and end with the command
+  to reply; when you are busy they reach you once the current step ends.
+
 - **Any other client** listed in the adapters file:
   `filo register --as <client> --name NAME`.
 
@@ -79,6 +85,7 @@ status or the diff, or start any other work unless the user asks for it.
 When the user tells you to leave, or you are done:
 
 - **Claude:** stop the Monitor. The listener leaves when it ends.
+- **OpenCode:** call the `filo_leave` tool.
 - **Codex, agy and other registered clients:** run `filo leave`. Add
   `--name NAME` to remove a registered name that is not yours. Afterwards others
   get an error when they write to you, and you can register again later.

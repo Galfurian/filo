@@ -883,8 +883,10 @@ def claim_listener_name(scope: str, base: str, exact: bool) -> tuple[str, socket
 class Listener:
     """A participant that receives messages on its Unix socket and prints them."""
 
-    def __init__(self, scope: str, name: str, server: socket.socket, as_json: bool) -> None:
+    def __init__(self, scope: str, name: str, server: socket.socket, as_json: bool,
+                 parent: int | None = None) -> None:
         self.scope = scope
+        self.parent = parent
         self.name = name
         self.server = server
         self.as_json = as_json
@@ -911,8 +913,8 @@ class Listener:
             print("listening; press Ctrl-C to leave", flush=True)
 
     def serve(self) -> None:
-        """Deliver spooled messages and answer connections, forever."""
-        while True:
+        """Deliver spooled messages and answer connections until the parent, if any, is gone."""
+        while self.parent is None or pid_alive(self.parent):
             drain_spool(self.scope, self.name, self.print_spooled)
             try:
                 connection, _ = self.server.accept()
@@ -972,7 +974,7 @@ def join(args: argparse.Namespace) -> int:
     scope = canonical_scope(args.scope)
     existing = participant_rows(scope)
     name, server = claim_listener_name(scope, valid_name(args.name, "--as"), args.exact)
-    listener = Listener(scope, name, server, args.json)
+    listener = Listener(scope, name, server, args.json, args.parent)
 
     def stop(_signum: int, _frame: object) -> None:
         listener.close()
@@ -1026,6 +1028,8 @@ def command_parser() -> argparse.ArgumentParser:
     join_parser.add_argument("--as", dest="name", required=True,
                              help="your participant name; if taken a numeric suffix is added")
     join_parser.add_argument("--exact", action="store_true", help="fail instead of adding a suffix")
+    join_parser.add_argument("--parent", type=int, metavar="PID",
+                             help="leave when this process ends (for a plugin that starts the listener)")
     join_parser.add_argument("--json", action="store_true", help="emit machine-readable output")
 
     register_parser = sub.add_parser(

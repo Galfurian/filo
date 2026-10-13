@@ -13,6 +13,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import cast
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "filo.py"
@@ -785,6 +786,16 @@ class AdapterConfigTests(RuntimeCase):
         self.assertEqual(refused.returncode, 1)
         self.assertIn("stop", refused.stderr)
 
+    def test_a_listener_started_for_a_parent_leaves_when_the_parent_ends(self) -> None:
+        parent = subprocess.Popen(["sleep", "30"])
+        self.children.append(cast("subprocess.Popen[bytes]", parent))
+        process, _lines, _joined = self.listen("child", "--parent", str(parent.pid))
+        self.assertIsNone(process.poll())
+        parent.kill()
+        parent.wait(timeout=5)
+        self.assertEqual(process.wait(timeout=5), 0)
+        self.assertEqual(json.loads(self.msg("who", "--json").stdout)["participants"], [])
+
     def test_unknown_clients_and_bad_configs_are_rejected_clearly(self) -> None:
         unknown = self.msg("register", "--as", "nobody", "--session", "abcdef123")
         self.assertNotEqual(unknown.returncode, 0)
@@ -846,6 +857,16 @@ class ProfileTests(RuntimeCase):
         self.assertEqual(self.msg("profile", "a/b").returncode, 1)
 
 
+class OpencodePluginTests(unittest.TestCase):
+    def test_the_plugin_bridges_filo_to_a_session(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        result = subprocess.run([node, str(ROOT / "tests" / "opencode_plugin.test.mjs")],
+                                capture_output=True, text=True, check=False, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
 class ReadmeTests(unittest.TestCase):
     def test_every_image_the_readme_shows_exists(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -864,6 +885,8 @@ class InstallerTests(unittest.TestCase):
         self.claude, self.agents, self.agy = (root / f"{client}-home" / "skills" for client in ("claude", "agents", "agy"))
         for skills in (self.claude, self.agents, self.agy):
             skills.parent.mkdir()
+        self.opencode = root / "opencode-home"
+        self.opencode.mkdir()
         # A PATH that holds only what the scripts need, so that the clients installed on
         # this machine (claude, codex, agy) do not change the result.
         self.tools = root / "tools"
@@ -879,6 +902,7 @@ class InstallerTests(unittest.TestCase):
             "FILO_CLAUDE_SKILLS": str(self.claude),
             "FILO_AGENTS_SKILLS": str(self.agents),
             "FILO_AGY_SKILLS": str(self.agy),
+            "FILO_OPENCODE_DIR": str(self.opencode),
         }
 
     def tearDown(self) -> None:
@@ -963,6 +987,20 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("not executable", result.stderr)
         self.assertEqual((checkout / "filo.py").stat().st_mode & 0o777, 0o644)
         self.assertFalse((self.bin / "filo").is_symlink())
+
+    def test_opencode_gets_its_plugin_and_command_and_loses_them_on_uninstall(self) -> None:
+        plugin, command = self.opencode / "plugins" / "filo.js", self.opencode / "commands" / "filo.md"
+        self.assertEqual(self.install().returncode, 0)
+        self.assertEqual(plugin.resolve(), ROOT / "plugins" / "opencode" / "filo.js")
+        self.assertEqual(command.resolve(), ROOT / "commands" / "opencode" / "filo.md")
+        self.assertEqual(self.uninstall().returncode, 0)
+        self.assertFalse(plugin.is_symlink() or command.is_symlink())
+
+    def test_without_opencode_nothing_is_created_for_it(self) -> None:
+        self.opencode.rmdir()
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.opencode.exists())
 
     def test_uninstall_declares_what_it_leaves_behind(self) -> None:
         self.install()

@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <b>Start a few Claude, Codex and agy sessions in one directory, give each a role,<br>and they message each other by name: one plans, one researches, one builds.</b><br>
+  <b>Start a few Claude, Codex, agy and OpenCode sessions in one directory, give each a role,<br>and they message each other by name: one plans, one researches, one builds.</b><br>
   One Python file, standard library only, no sudo.
 </p>
 
@@ -68,6 +68,7 @@ depends on the recipient: three routes, shown above and described under
 |---|---|---|---|
 | Claude | a Monitor on `filo join --as claude --json` | an event that wakes it, with the reply command | the Monitor expires; start it again |
 | Codex | `filo register --as codex` (records `$CODEX_THREAD_ID`) | a normal turn, through `codex queue`, even while you type | none |
+| OpenCode | `/filo` runs the plugin, which starts `filo join` for that session | a user message in the same session, through the plugin; the chat is never locked | the plugin adds the tools `filo_join` and `filo_leave` to every OpenCode session; a message that arrives while OpenCode works waits for the step to end |
 | agy | `filo register --as agy` (records `$ANTIGRAVITY_CONVERSATION_ID`) | a system message, through `agentapi send-message`; the chat is never locked and no second `agy` starts | an idle agy starts a turn on its own when one arrives; a busy one gets it when its current step ends, and it does not interrupt a running command; `register` must run inside agy |
 | Anything else | `filo register --as NAME` | whatever its adapter does, see [Adding another LLM](#adding-another-llm) | |
 
@@ -119,6 +120,8 @@ into this checkout, so `git pull` upgrades everything. (Git tracks `filo.py` as
 executable; if yours is not, the installer stops and says so.)
 
 - `~/.local/bin/filo` -> `filo.py`
+- for OpenCode, the plugin `plugins/opencode/filo.js` in `~/.config/opencode/plugins`
+  and the command `commands/opencode/filo.md` in `~/.config/opencode/commands`
 - the skill `skills/filo`, in the skills directory of each client that is
   installed: `~/.claude/skills` (Claude), `~/.agents/skills` (Codex),
   `~/.gemini/antigravity-cli/skills` (agy). A client counts as installed when
@@ -129,7 +132,7 @@ It never overwrites an existing file or a link it did not create. The
 uninstaller removes only links that point into this checkout. It leaves the
 runtime state (`/tmp/filo-runtime`, which holds agy tokens), your adapters file
 and this checkout, and says so. Override the locations with `FILO_BIN_DIR`,
-`FILO_CLAUDE_SKILLS`, `FILO_AGENTS_SKILLS` and `FILO_AGY_SKILLS`. The profiles
+`FILO_CLAUDE_SKILLS`, `FILO_AGENTS_SKILLS`, `FILO_AGY_SKILLS` and `FILO_OPENCODE_DIR`. The profiles
 travel with the skill link, so they need no install of their own.
 
 ## Commands
@@ -177,6 +180,15 @@ Sandboxed senders (the Codex sandbox cannot connect to Unix sockets, but can
 write files) leave the message in the spool automatically, and the listener
 delivers it within half a second. Every message has an id; `status` reports
 whether it was delivered.
+
+## Compatibility
+
+Tried with Claude Code 2.1.296, Codex 0.162.1, Antigravity CLI (agy) 1.3.4 and OpenCode
+1.18.31. Codex is reached with `codex queue`. The agy and OpenCode integrations use
+interfaces that can change in an update: for agy, `agentapi` and the `ANTIGRAVITY_*`
+variables, which were found by inspecting the CLI and not in documentation; for
+OpenCode, the plugin API. If a client updates and delivery stops, that is the first
+place to look; reports with the version are welcome.
 
 ## Adding another LLM
 
@@ -247,6 +259,7 @@ Run `pip install -e '.[dev]'` to get the checkers. CI runs all four on every pus
 
 MIT, see `LICENSE`.
 
-The Claude, OpenAI and Gemini marks in the diagram come from
-[Simple Icons](https://simpleicons.org). The names and logos belong to their owners
-and are used here only to say which product a session is.
+The Claude, OpenAI and Gemini marks in the images come from
+[Simple Icons](https://simpleicons.org), and the OpenCode mark from
+[opencode.ai](https://opencode.ai). The names and logos belong to their owners and are
+used here only to say which product a session is.

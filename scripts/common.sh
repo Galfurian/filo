@@ -5,6 +5,7 @@ bin_dir=${FILO_BIN_DIR:-"$HOME/.local/bin"}
 claude_skills=${FILO_CLAUDE_SKILLS:-"$HOME/.claude/skills"}
 agents_skills=${FILO_AGENTS_SKILLS:-"$HOME/.agents/skills"}
 agy_skills=${FILO_AGY_SKILLS:-"$HOME/.gemini/antigravity-cli/skills"}
+opencode_dir=${FILO_OPENCODE_DIR:-"$HOME/.config/opencode"}
 skill_src="$repo_dir/skills/filo"
 tab=$(printf '\t')
 
@@ -20,7 +21,9 @@ links() {
         "the filo command" "$bin_dir/filo" "$repo_dir/filo.py" "" "" \
         "the skill for Claude" "$claude_skills/filo" "$skill_src" "$(dirname "$claude_skills")" claude \
         "the skill for Codex" "$agents_skills/filo" "$skill_src" "$(dirname "$agents_skills")" codex \
-        "the skill for agy" "$agy_skills/filo" "$skill_src" "$(dirname "$agy_skills")" agy
+        "the skill for agy" "$agy_skills/filo" "$skill_src" "$(dirname "$agy_skills")" agy \
+        "the plugin for OpenCode" "$opencode_dir/plugins/filo.js" "$repo_dir/plugins/opencode/filo.js" "$opencode_dir" opencode \
+        "the /filo command for OpenCode" "$opencode_dir/commands/filo.md" "$repo_dir/commands/opencode/filo.md" "$opencode_dir" opencode
 }
 
 # True when $1 is a symlink that points at $2.
