@@ -9,6 +9,7 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
   <a href="https://github.com/Galfurian/filo/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Galfurian/filo/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/Galfurian/filo/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/Galfurian/filo/actions/workflows/codeql.yml/badge.svg"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/Galfurian/filo"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/Galfurian/filo/badge"></a>
   <img alt="Python 3.10 or later" src="https://img.shields.io/badge/python-3.10%2B-blue">
   <img alt="No dependencies" src="https://img.shields.io/badge/dependencies-none-brightgreen">
 </p>
@@ -259,7 +260,10 @@ ruff check .
 The type-checker settings live in `pyproject.toml`, so the result does not depend
 on local configuration.
 
-Run `pip install -e '.[dev]'` to get the checkers. CI runs all four on every push.
+Run `pip install -e '.[dev]'` to get the checkers. CI runs all four, and ShellCheck on the
+installer, on every push, with the versions in `requirements-dev.txt` and their hashes
+checked. After changing the `dev` list in `pyproject.toml`, regenerate it with
+`uv pip compile pyproject.toml --extra dev --universal --python-version 3.10 --generate-hashes -o requirements-dev.txt`.
 
 ## License
 

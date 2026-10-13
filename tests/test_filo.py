@@ -896,6 +896,8 @@ class WorkflowTests(unittest.TestCase):
             for action, ref in re.findall(r"uses:\s*(\S+)@(\S+)", text):
                 self.assertRegex(ref, r"^[0-9a-f]{40}$", f"{workflow.name}: {action} is not pinned to a commit")
             self.assertRegex(text, r"(?m)^permissions:", f"{workflow.name} has no top-level permissions")
+            for command in re.findall(r"run:\s*(pip install[^\n]*)", text):
+                self.assertIn("--require-hashes", command, f"{workflow.name}: pip install without hash checking")
 
 
 class ReadmeTests(unittest.TestCase):

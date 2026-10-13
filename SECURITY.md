@@ -3,9 +3,13 @@
 ## Reporting a vulnerability
 
 Please do not open a public issue for a security problem. Use GitHub's private report:
-**Security** tab, **Report a vulnerability**. Say which version or commit you tried, what
-you did, and what you expected. I will answer as soon as I can and credit you in the fix
-unless you prefer not to be named.
+<https://github.com/Galfurian/filo/security/advisories/new> (the **Security** tab, then
+**Report a vulnerability**). Say which version or commit you tried, what you did, and what
+you expected.
+
+I aim to answer within 7 days, to fix a confirmed problem or explain why not within 90
+days, and to publish an advisory when the fix is out, crediting you unless you prefer not
+to be named. Please keep the details private until then.
 
 Only the latest commit on `main` is supported; there are no other maintained versions.
 
