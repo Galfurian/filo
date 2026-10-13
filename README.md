@@ -247,9 +247,14 @@ offer a way to push a message into a running session from outside: Codex has
 
 Runtime state lives under `/tmp/filo-<your uid>` (or `FILO_DIR`): sockets,
 the spool and small metadata files, all mode `0600`/`0700`. A registration is
-forgotten when fewer of that client's processes run in the directory than there
-are registrations (the newest are kept); `who` and `send` do this check. `who`
-never deletes a listener it merely cannot probe: a sandboxed or slow one stays.
+forgotten when none of that client's processes run in the directory any more; `who` and
+`send` do this check. If some still run but fewer than there are registrations, filo cannot
+tell which ones ended, so it keeps all of them: an old registration is better than
+forgetting a session that is alive. For agy it can tell exactly, from the session's own
+address. `who` never deletes a listener it merely cannot probe: a sandboxed or slow one stays.
+
+filo never guesses which session you mean. A client is reached only through a session that
+registered itself, by name; `send --to codex` with nobody registered is an error that says so.
 
 ## Security
 

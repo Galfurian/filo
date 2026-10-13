@@ -181,11 +181,9 @@ class CodexQueueRouteTests(unittest.TestCase):
         self.live_dir = base / "live"
         self.live_dir.mkdir()
         self.live: list[subprocess.Popen[bytes]] = []
-        self.state = base / "state_5.sqlite"
         self.environment = {
             **os.environ,
             "FILO_DIR": str(self.runtime),
-            "FILO_CODEX_HOME": str(base),
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
         }
 
@@ -208,51 +206,20 @@ class CodexQueueRouteTests(unittest.TestCase):
             self.live.append(subprocess.Popen([str(program), "120"], cwd=cwd or self.scope))
         time.sleep(0.2)
 
-    def threads(self, rows: list[tuple[str, str, int, str, str, int]]) -> None:
-        import sqlite3
-        connection = sqlite3.connect(self.state)
-        connection.execute(
-            "create table threads (id text, cwd text, archived integer, "
-            "thread_source text, source text, updated_at integer)"
-        )
-        connection.executemany("insert into threads values (?,?,?,?,?,?)", rows)
-        connection.commit()
-        connection.close()
-
     def send(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(SCRIPT), "send", *args],
             cwd=self.scope, env=self.environment, text=True, capture_output=True, check=False,
         )
 
-    def test_queues_to_newest_interactive_thread_of_the_scope(self) -> None:
-        cwd = str(self.scope.resolve())
-        self.threads([
-            ("old", cwd, 0, "user", "cli", 10),
-            ("newest", cwd, 0, "user", "vscode", 30),
-            ("guardian", cwd, 0, "guardian_review", "cli", 40),
-            ("archived", cwd, 1, "user", "cli", 50),
-            ("headless", cwd, 0, "user", "exec", 60),
-            ("elsewhere", "/somewhere/else", 0, "user", "cli", 70),
-        ])
-        sent = self.send("--to", "codex", "--from", "claude", "please review")
-        self.assertEqual(sent.returncode, 0, sent.stderr)
-        args = json.loads(self.record.read_text(encoding="utf-8"))
-        self.assertEqual(args[:3], ["queue", "--thread", "newest"])
-        body = args[args.index("--message") + 1]
-        self.assertIn("please review", body)
-        self.assertIn("[filo] Message from claude:", body)
-        self.assertIn("filo send --to claude --from codex", body)
-
-    def test_fails_clearly_without_a_thread(self) -> None:
-        self.threads([("elsewhere", "/somewhere/else", 0, "user", "cli", 70)])
+    def test_a_codex_that_has_not_registered_is_not_guessed(self) -> None:
         sent = self.send("--to", "codex", "--from", "claude", "hello")
-        self.assertNotEqual(sent.returncode, 0)
-        self.assertIn("no Codex thread", sent.stderr)
+        self.assertEqual(sent.returncode, 1)
+        self.assertIn("has not registered here", sent.stderr)
+        self.assertIn("does not guess", sent.stderr)
         self.assertFalse(self.record.exists())
 
     def test_other_recipients_do_not_use_codex(self) -> None:
-        self.threads([])
         sent = self.send("--to", "claude", "--from", "codex", "hello")
         self.assertNotEqual(sent.returncode, 0)
         self.assertIn("not connected", sent.stderr)
@@ -357,9 +324,7 @@ class RegistrationTests(CodexQueueRouteTests):
             text=True, capture_output=True, check=False,
         )
 
-    def test_registered_thread_wins_over_the_database_guess(self) -> None:
-        cwd = str(self.scope.resolve())
-        self.threads([("guessed", cwd, 0, "user", "cli", 99)])
+    def test_a_registered_thread_receives_the_message(self) -> None:
         self.start_codex()
         registered = self.register("--as", "codex", env={"CODEX_THREAD_ID": "01a125b1-5fb3-70a3-81ad-3a51833def23"})
         self.assertEqual(registered.returncode, 0, registered.stderr)
@@ -378,14 +343,12 @@ class RegistrationTests(CodexQueueRouteTests):
         registered = json.loads(who.stdout)["registered"]
         self.assertEqual([(row["name"], row["session"]) for row in registered], [("codex", "0123abcd-4567")])
 
-    def test_falls_back_to_the_database_when_no_thread_id_is_known(self) -> None:
-        cwd = str(self.scope.resolve())
-        self.threads([("from-db", cwd, 0, "user", "cli", 5)])
-        env = {key: value for key, value in self.environment.items() if key != "CODEX_THREAD_ID"}
-        self.environment = env
-        registered = self.register("--as", "codex")
-        self.assertEqual(registered.returncode, 0, registered.stderr)
-        self.assertIn("from-db", registered.stdout)
+    def test_registering_without_a_thread_id_is_refused_not_guessed(self) -> None:
+        self.environment = {key: value for key, value in self.environment.items() if key != "CODEX_THREAD_ID"}
+        refused = self.register("--as", "codex")
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("CODEX_THREAD_ID", refused.stderr)
+        self.assertEqual(list(self.runtime.glob("*/*.reg")), [])
 
     def test_rejects_other_clients_and_unsafe_thread_ids(self) -> None:
         self.assertNotEqual(self.register("--as", "claude", "--session", "abcd1234").returncode, 0)
@@ -643,17 +606,19 @@ class SessionTests(CodexQueueRouteTests):
         self.assertEqual(self.send("--to", "codex", "--from", "claude", "to the first").returncode, 0)
         self.assertEqual(self.queued_thread(), self.A)
 
-    def test_sessions_that_ended_are_forgotten(self) -> None:
+    def test_sessions_are_forgotten_only_when_none_of_them_runs_any_more(self) -> None:
         self.start_codex(1)
         self.register_session(self.A)
         self.register_session(self.B)
+        # One process for two registrations: which one ended cannot be told, so both stay.
         names = [row["name"] for row in json.loads(self.msg_who().stdout)["registered"]]
-        self.assertEqual(names, ["codex-2"])
-        self.assertEqual(len(list(self.runtime.glob("*/*.reg"))), 1)
+        self.assertEqual(names, ["codex", "codex-2"])
+        self.assertEqual(len(list(self.runtime.glob("*/*.reg"))), 2)
         for process in self.live:
             process.terminate()
             process.wait(timeout=5)
         self.assertEqual(json.loads(self.msg_who().stdout)["registered"], [])
+        self.assertEqual(list(self.runtime.glob("*/*.reg")), [])
 
     def test_nothing_is_forgotten_where_the_process_table_is_not_trusted(self) -> None:
         self.register_session(self.A)
