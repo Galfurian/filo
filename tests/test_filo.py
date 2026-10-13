@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -13,7 +14,8 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "filo.py"
@@ -829,6 +831,34 @@ class AdapterConfigTests(RuntimeCase):
 
 
 SHELL = shutil.which("sh") or "/bin/sh"
+
+
+def load_filo() -> Any:
+    """The filo module itself, to call its functions directly."""
+    spec = importlib.util.spec_from_file_location("filo_under_test", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class PlatformTests(unittest.TestCase):
+    def test_lsof_output_is_read_for_the_command_that_was_asked_about(self) -> None:
+        output = "p101\ncfoo\nfcwd\nn/home/a\np102\nccodex\nfcwd\nn/home/b\np103\nccodex\nfcwd\nn/home/c\n"
+        self.assertEqual(load_filo().parse_lsof(output, "codex"), ["/home/b", "/home/c"])
+        self.assertEqual(load_filo().parse_lsof(output, "nobody"), [])
+        self.assertEqual(load_filo().parse_lsof("", "codex"), [])
+
+    def test_a_system_that_cannot_list_processes_forgets_nobody(self) -> None:
+        module = load_filo()
+        with tempfile.TemporaryDirectory() as raw, mock.patch.dict(os.environ, {"FILO_DIR": f"{raw}/rt"}):
+            scope = module.canonical_scope(raw)
+            module.write_metadata(module.scope_directory(scope) / "codex.reg", {
+                "name": "codex", "client": "codex", "session": "abcdef123456", "registered_ns": 1, "env": {}})
+            with mock.patch.object(module, "process_cwds", return_value=None):
+                self.assertEqual([row.name for row in module.live_registrations(scope)], ["codex"])
+            with mock.patch.object(module, "process_cwds", return_value=[]):
+                self.assertEqual(module.live_registrations(scope), [])
 
 
 class ProfileTests(RuntimeCase):

@@ -24,7 +24,9 @@ protect.
 - All state lives in `/tmp/filo-<uid>` (or `FILO_DIR`). filo refuses a directory that is a
   link, is not a directory, or belongs to someone else, and closes one that is too open to
   `0700`. Sockets and registration files are `0600`.
-- A listener refuses a peer whose user is not its own.
+- A listener refuses a peer whose user is not its own, where the system can tell (Linux
+  and macOS). Elsewhere that check is skipped and the private directory is what keeps
+  other users out.
 - Names are limited to letters, digits, `.`, `_` and `-`, so a name cannot be a path.
 
 **It does not protect against anything running as you.**

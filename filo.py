@@ -219,12 +219,22 @@ def request(path: Path, payload: JsonObject) -> JsonObject:
 
 
 def peer_credentials(connection: socket.socket) -> tuple[int | None, int | None]:
-    """(pid, uid) of the process on the other end of a Unix socket."""
+    """(pid, uid) of the process on the other end of a Unix socket.
+
+    Linux has ``SO_PEERCRED`` and macOS has ``LOCAL_PEERPID`` and ``LOCAL_PEERCRED``.
+    Elsewhere, or when the system refuses, nothing is known and the private directory
+    is what keeps other users out.
+    """
     try:
+        if sys.platform == "darwin":
+            sol_local, local_peercred, local_peerpid = 0, 1, 2
+            pid = int(struct.unpack("i", connection.getsockopt(sol_local, local_peerpid, struct.calcsize("i")))[0])
+            _version, uid = struct.unpack_from("II", connection.getsockopt(sol_local, local_peercred, 128))
+            return pid, int(uid)
         raw = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
         pid, uid, _ = struct.unpack("3i", raw)
         return pid, uid
-    except (OSError, AttributeError):
+    except (OSError, AttributeError, struct.error):
         return None, None
 
 
@@ -586,18 +596,45 @@ def sandboxed() -> bool:
     return bool(os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED") or os.environ.get("FILO_NO_PRUNE"))
 
 
-def process_cwds(command: str) -> list[str]:
-    """Working directories of the running processes called ``command``."""
+def parse_lsof(output: str, command: str) -> list[str]:
+    """The ``n`` (path) lines that belong to processes called ``command`` in ``lsof -Fcn`` output."""
     found: list[str] = []
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            if (entry / "comm").read_text(encoding="utf-8").strip() == command:
-                found.append(os.readlink(entry / "cwd"))
-        except OSError:
-            continue
+    current: str | None = None
+    for line in output.splitlines():
+        if line.startswith("p"):
+            current = None
+        elif line.startswith("c"):
+            current = line[1:]
+        elif line.startswith("n") and current == command:
+            found.append(line[1:])
     return found
+
+
+def process_cwds(command: str) -> list[str] | None:
+    """Working directories of the running processes called ``command``.
+
+    ``/proc`` answers on Linux; ``lsof`` does elsewhere, for example on macOS. None
+    means this system cannot tell, and nobody must be forgotten on that account.
+    """
+    proc = Path("/proc")
+    if proc.is_dir():
+        found: list[str] = []
+        for entry in proc.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                if (entry / "comm").read_text(encoding="utf-8").strip() == command:
+                    found.append(os.readlink(entry / "cwd"))
+            except OSError:
+                continue
+        return found
+    try:
+        result = subprocess.run(["lsof", "-a", "-d", "cwd", "-c", command, "-Fcn"],
+                                capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    # lsof exits with 1 when it finds nothing, which is an answer; anything else is not.
+    return parse_lsof(result.stdout, command) if result.returncode in (0, 1) else None
 
 
 @dataclass(frozen=True)
@@ -654,7 +691,11 @@ def live_registrations(scope: str) -> list[Registration]:
         if adapter is None or not adapter.process:
             kept += group
             continue
-        alive = sum(1 for cwd in process_cwds(adapter.process) if cwd == directory)
+        cwds = process_cwds(adapter.process)
+        if cwds is None:
+            kept += group
+            continue
+        alive = sum(1 for cwd in cwds if cwd == directory)
         kept += group[:alive]
         for stale in group[alive:]:
             unlink_if_present(stale.path)

@@ -186,7 +186,14 @@ whether it was delivered.
 
 ## Compatibility
 
-Tried with Claude Code 2.1.296, Codex 0.162.1, Antigravity CLI (agy) 1.3.4 and OpenCode
+**Systems.** filo is used day to day on Linux (Ubuntu 24.04, under WSL2). Its test suite
+also runs on GitHub's macOS runners on every push, but the client integrations have not
+been tried on a Mac. Native Windows is not supported (it needs Unix sockets and a POSIX
+shell); use WSL. On macOS the other end of a socket is identified with `LOCAL_PEERCRED`
+and running sessions are found with `lsof`; where a system offers neither, filo does not
+forget a session it cannot check, and relies on the private runtime directory.
+
+**Clients.** Tried with Claude Code 2.1.296, Codex 0.162.1, Antigravity CLI (agy) 1.3.4 and OpenCode
 1.18.31. Codex is reached with `codex queue`. The agy and OpenCode integrations use
 interfaces that can change in an update: for agy, `agentapi` and the `ANTIGRAVITY_*`
 variables, which were found by inspecting the CLI and not in documentation; for
