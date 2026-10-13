@@ -67,6 +67,7 @@ filo status ID          # delivered? pending? expired?
 filo join --as human    # a human listener, no LLM
 filo register --as agy --name reviewer   # choose the name of a registered session
 filo rename agy-2 reviewer               # or change it later
+filo leave                                  # a registered session leaves the pool
 ```
 
 ### Names and scopes
@@ -77,7 +78,8 @@ In one directory the first `claude` is `claude`, the next `claude-2`, and so
 on; `register` numbers `codex` and `agy` sessions the same way. `join --exact`
 fails instead of adding a suffix. `register --name NAME` picks the name, and a
 name that is taken is an error. `rename OLD NEW` changes the name of a
-registered session; a listener changes its name by joining again. Address a
+registered session; a listener changes its name by joining again. A registered
+session leaves with `filo leave`, and a listener by stopping. Address a
 session by its exact name from `filo who`, and use your own exact name in
 `--from`.
 
@@ -89,6 +91,10 @@ session by its exact name from `filo who`, and use your own exact name in
 | Registered (`register`) | Through the client's adapter, for example `codex queue` or `agentapi send-message`. |
 | Known but away | Into a spool; delivered when a listener with that name joins. Kept for an hour (`FILO_SPOOL_TTL`), names are remembered for a day. |
 | Never seen | Error. |
+
+Leaving is not the same for everyone. A listener that stops is only away: messages
+for it wait in the spool and arrive if it rejoins. A registered session that runs
+`filo leave` is gone: its name is forgotten and messages for it are refused.
 
 Sandboxed senders (the Codex sandbox cannot connect to Unix sockets, but can
 write files) leave the message in the spool automatically, and the listener

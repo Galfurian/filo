@@ -761,6 +761,30 @@ class AdapterConfigTests(RuntimeCase):
         self.assertEqual(list(self.runtime.glob("*/agy.reg")), [])
         self.assertEqual(list(self.runtime.glob("*/spool/*/*.msg")), [])
 
+    def test_a_registered_session_can_leave_the_pool(self) -> None:
+        env = {"GEMINI_SESSION": "gem-123456"}
+        self.assertEqual(self.msg("register", "--as", "gemini", "--name", "reviewer", env=env).returncode, 0)
+        self.assertEqual(self.msg("register", "--as", "gemini", "--name", "other",
+                                  env={"GEMINI_SESSION": "gem-654321"}).returncode, 0)
+        left = self.msg("leave", env=env)
+        self.assertEqual(left.returncode, 0, left.stderr)
+        self.assertIn("reviewer left the pool", left.stdout)
+        who = json.loads(self.msg("who", "--json").stdout)
+        self.assertEqual([row["name"] for row in who["registered"]], ["other"])
+        refused = self.msg("send", "--to", "reviewer", "--from", "claude", "hi")
+        self.assertEqual(refused.returncode, 1)
+        self.assertEqual(self.msg("register", "--as", "gemini", "--name", "reviewer", env=env).returncode, 0)
+        named = self.msg("leave", "--name", "other")
+        self.assertEqual(named.returncode, 0, named.stderr)
+        self.assertEqual(self.msg("leave", "--name", "other").returncode, 1)
+        self.assertIn("not registered", self.msg("leave", env={"GEMINI_SESSION": "gem-000000"}).stderr)
+
+    def test_leaving_names_the_way_out_for_a_listener(self) -> None:
+        self.listen("claude")
+        refused = self.msg("leave", "--name", "claude")
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("stop", refused.stderr)
+
     def test_unknown_clients_and_bad_configs_are_rejected_clearly(self) -> None:
         unknown = self.msg("register", "--as", "nobody", "--session", "abcdef123")
         self.assertNotEqual(unknown.returncode, 0)

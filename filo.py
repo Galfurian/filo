@@ -712,10 +712,38 @@ def rename(args: argparse.Namespace) -> int:
     write_metadata(scope_directory(scope) / f"{new}.reg", {
         "name": new, "client": row.client, "session": row.session, "registered_ns": row.registered_ns, "env": row.env,
     })
-    unlink_if_present(row.path)
-    unlink_if_present(scope_directory(scope) / "known" / f"{old}.json")
+    forget_registration(scope, row)
     mark_known(scope, new, "registered")
     print(f"renamed {old} to {new}; use --from {new} when you send")
+    return 0
+
+
+def forget_registration(scope: str, row: Registration) -> None:
+    """Remove a registration and the record that its name was ever seen."""
+    unlink_if_present(row.path)
+    unlink_if_present(scope_directory(scope) / "known" / f"{valid_name(row.name)}.json")
+
+
+def leave(args: argparse.Namespace) -> int:
+    """Take a registered session out of the pool. A listener leaves by stopping."""
+    scope = canonical_scope(args.scope)
+    rows = read_registrations(scope)
+    if args.chosen:
+        name = valid_name(args.chosen, "--name")
+        found = [row for row in rows if row.name == name]
+        if not found:
+            raise UserError(f"leave: {name!r} is not a registered session here"
+                            + ("; a listener leaves by stopping 'filo join' (stop its Monitor)"
+                               if metadata_path(scope, name).exists() else "; see 'filo who'"))
+    else:
+        mine = {(adapter.client, os.environ[adapter.id_env]) for adapter in adapters().values()
+                if adapter.id_env and os.environ.get(adapter.id_env)}
+        found = [row for row in rows if (row.client, row.session) in mine]
+        if not found:
+            raise UserError("leave: this session is not registered here; pass --name NAME (see 'filo who')")
+    for row in found:
+        forget_registration(scope, row)
+        print(f"{row.name} left the pool; its name is free again and messages to it are refused")
     return 0
 
 
@@ -930,6 +958,7 @@ def command_parser() -> argparse.ArgumentParser:
             "  filo register --as codex          announce this Codex session\n"
             "  filo register --as agy --name reviewer   pick your own name\n"
             "  filo rename agy-2 reviewer\n"
+            "  filo leave                           take this registered session out of the pool\n"
             "  filo who\n"
             "  filo send --to claude --from codex --message 'review this'\n"
             "  filo send --to codex --from claude --stdin < message.txt\n"
@@ -956,6 +985,11 @@ def command_parser() -> argparse.ArgumentParser:
     register_parser.add_argument("--name", dest="chosen",
                                  help="the name others use for this session; defaults to the client name")
     register_parser.add_argument("--json", action="store_true", help="emit machine-readable output")
+
+    leave_parser = sub.add_parser("leave", help="take a registered session out of the pool")
+    scope_argument(leave_parser)
+    leave_parser.add_argument("--name", dest="chosen",
+                              help="the registered name to remove; defaults to this session")
 
     rename_parser = sub.add_parser("rename", help="give a registered session another name")
     scope_argument(rename_parser)
@@ -1026,6 +1060,8 @@ def main(argv: list[str] | None = None) -> int:
             return join(args)
         if args.command == "register":
             return register(args)
+        if args.command == "leave":
+            return leave(args)
         if args.command == "rename":
             return rename(args)
         scope = canonical_scope(args.scope)

@@ -54,6 +54,15 @@ To pick your own name instead of the default, add `--name NAME` to `register`
 `filo rename OLD NEW`. A name that is taken is an error. A listener changes
 its name by running `join --as NEW`.
 
+## Leaving the pool
+
+When the user tells you to leave, or you are done:
+
+- **Claude:** stop the Monitor. The listener leaves when it ends.
+- **Codex, agy and other registered clients:** run `filo leave`. Add
+  `--name NAME` to remove a registered name that is not yours. Afterwards others
+  get an error when they write to you, and you can register again later.
+
 ## Sending
 
 ```
