@@ -945,6 +945,15 @@ class WorkflowTests(unittest.TestCase):
                 self.assertIn("--require-hashes", command, f"{workflow.name}: pip install without hash checking")
 
 
+class ReleaseTests(unittest.TestCase):
+    def test_the_current_version_has_release_notes(self) -> None:
+        text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        match = re.search(r'(?m)^version = "([^"]+)"', text)
+        self.assertIsNotNone(match)
+        assert match is not None
+        self.assertTrue((ROOT / "docs" / "releases" / f"v{match.group(1)}.md").is_file())
+
+
 class ReadmeTests(unittest.TestCase):
     def test_every_image_the_readme_shows_exists(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
