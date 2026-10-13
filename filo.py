@@ -96,34 +96,45 @@ def scope_path(scope: str) -> str | None:
     return scope[len("path:"):] if scope.startswith("path:") else None
 
 
-def runtime_root() -> Path:
-    """The directory that holds all state, private to this user.
+def secure_directory(path: Path) -> Path:
+    """Make ``path`` a directory that is private to this user, or refuse to use it.
 
-    The default is ``/tmp/filo-<uid>``, so two users never share a name. A directory
-    that is a link, is not a directory, or belongs to someone else is refused: anyone
-    could have made it before us, and the sockets and tokens inside would be theirs.
-    One that is ours but too open is closed to ``0700``.
+    One that is a link, is not a directory, or belongs to someone else is refused: anyone
+    could have made it before us, and what we put in it would be theirs. One that is ours
+    but open to others is closed to ``0700``, unless it already holds a link or something
+    of another user's, which could have been put there while it was open.
     """
-    path = Path(os.environ.get("FILO_DIR", f"{DEFAULT_RUNTIME}-{os.getuid()}")).expanduser()
+    refusal = (f"{path} is not a plain directory of yours, so filo will not use it; "
+               f"remove it or set FILO_DIR to another")
     try:
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
         info = path.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+            raise UserError(refusal)
+        if info.st_mode & 0o077:
+            with os.scandir(path) as entries:
+                for entry in entries:
+                    inside = entry.stat(follow_symlinks=False)
+                    if stat.S_ISLNK(inside.st_mode) or inside.st_uid != os.getuid():
+                        raise UserError(f"{refusal} (it is open to others and holds {entry.name!r}, "
+                                        f"which is a link or not yours)")
+            os.chmod(path, 0o700)
     except OSError as exc:
-        raise UserError(f"runtime directory {path}: {exc.strerror or exc}") from exc
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
-        raise UserError(f"{path} is not a plain directory of yours, so filo will not use it; "
-                        f"remove it or set FILO_DIR to another")
-    if info.st_mode & 0o077:
-        os.chmod(path, 0o700)
+        raise UserError(f"directory {path}: {exc.strerror or exc}") from exc
     return path
+
+
+def runtime_root() -> Path:
+    """The directory that holds all state, private to this user.
+
+    The default is ``/tmp/filo-<uid>``, so two users never share a name.
+    """
+    return secure_directory(Path(os.environ.get("FILO_DIR", f"{DEFAULT_RUNTIME}-{os.getuid()}")).expanduser())
 
 
 def scope_directory(scope: str) -> Path:
     digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:16]
-    directory = runtime_root() / digest
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(directory, 0o700)
-    return directory
+    return secure_directory(runtime_root() / digest)
 
 
 def socket_path(scope: str, name: str) -> Path:
@@ -169,12 +180,21 @@ def as_object(value: Any, what: str) -> JsonObject:
 
 
 def read_object(path: Path) -> JsonObject:
-    """Read a small JSON object owned by this user, or raise ProtocolError/OSError."""
-    if path.stat().st_uid != os.getuid():
-        raise ProtocolError("file is not owned by this user")
-    if path.stat().st_size > MAX_FRAME:
-        raise ProtocolError("file is too large")
-    return as_object(json.loads(path.read_text(encoding="utf-8")), "file")
+    """Read a small JSON object owned by this user, or raise ProtocolError/OSError.
+
+    The file is opened without following a link and checked through the descriptor, so
+    what is checked is what is read.
+    """
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(descriptor, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ProtocolError("not a regular file")
+        if info.st_uid != os.getuid():
+            raise ProtocolError("file is not owned by this user")
+        if info.st_size > MAX_FRAME:
+            raise ProtocolError("file is too large")
+        return as_object(json.loads(handle.read().decode("utf-8")), "file")
 
 
 def int_field(data: JsonObject, key: str, default: int | None = None) -> int:

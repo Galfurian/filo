@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -817,6 +818,39 @@ class AdapterConfigTests(RuntimeCase):
         a_file.write_text("x", encoding="utf-8")
         self.assertEqual(self.msg("who", env={"FILO_DIR": str(a_file)}).returncode, 1)
         self.assertEqual(list(elsewhere.iterdir()), [])
+
+    def test_a_scope_directory_that_is_a_link_is_refused(self) -> None:
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        module = load_filo()
+        with mock.patch.dict(os.environ, {"FILO_DIR": str(self.runtime)}):
+            root = module.runtime_root()
+            digest = hashlib.sha256(module.canonical_scope(str(self.scope)).encode("utf-8")).hexdigest()[:16]
+        (root / digest).symlink_to(elsewhere)
+        refused = self.msg("who")
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("not a plain directory of yours", refused.stderr)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+    def test_an_open_directory_that_holds_a_link_is_not_trusted(self) -> None:
+        loose = self.root / "loose-with-link"
+        loose.mkdir()
+        (loose / "trap").symlink_to(self.root)
+        loose.chmod(0o755)
+        refused = self.msg("who", env={"FILO_DIR": str(loose)})
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("'trap'", refused.stderr)
+        self.assertEqual(loose.stat().st_mode & 0o777, 0o755)
+
+    def test_a_metadata_file_that_is_a_link_is_not_read(self) -> None:
+        module = load_filo()
+        real = self.root / "real.json"
+        real.write_text("{}", encoding="utf-8")
+        link = self.root / "link.json"
+        link.symlink_to(real)
+        self.assertEqual(module.read_object(real), {})
+        with self.assertRaises(OSError):
+            module.read_object(link)
 
     def test_a_runtime_directory_that_is_too_open_is_closed(self) -> None:
         loose = self.root / "loose"
