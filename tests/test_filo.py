@@ -796,6 +796,26 @@ class AdapterConfigTests(RuntimeCase):
         self.assertEqual(process.wait(timeout=5), 0)
         self.assertEqual(json.loads(self.msg("who", "--json").stdout)["participants"], [])
 
+    def test_the_runtime_directory_must_be_a_plain_directory_of_yours(self) -> None:
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        link = self.root / "runtime-link"
+        link.symlink_to(elsewhere)
+        refused = self.msg("who", env={"FILO_DIR": str(link)})
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("not a plain directory of yours", refused.stderr)
+        a_file = self.root / "runtime-file"
+        a_file.write_text("x", encoding="utf-8")
+        self.assertEqual(self.msg("who", env={"FILO_DIR": str(a_file)}).returncode, 1)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+    def test_a_runtime_directory_that_is_too_open_is_closed(self) -> None:
+        loose = self.root / "loose"
+        loose.mkdir()
+        loose.chmod(0o755)
+        self.assertEqual(self.msg("who", env={"FILO_DIR": str(loose)}).returncode, 0)
+        self.assertEqual(loose.stat().st_mode & 0o777, 0o700)
+
     def test_unknown_clients_and_bad_configs_are_rejected_clearly(self) -> None:
         unknown = self.msg("register", "--as", "nobody", "--session", "abcdef123")
         self.assertNotEqual(unknown.returncode, 0)
@@ -867,6 +887,17 @@ class OpencodePluginTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+class WorkflowTests(unittest.TestCase):
+    def test_every_action_is_pinned_to_a_commit_and_tokens_are_read_only_by_default(self) -> None:
+        workflows = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+        self.assertTrue(workflows)
+        for workflow in workflows:
+            text = workflow.read_text(encoding="utf-8")
+            for action, ref in re.findall(r"uses:\s*(\S+)@(\S+)", text):
+                self.assertRegex(ref, r"^[0-9a-f]{40}$", f"{workflow.name}: {action} is not pinned to a commit")
+            self.assertRegex(text, r"(?m)^permissions:", f"{workflow.name} has no top-level permissions")
+
+
 class ReadmeTests(unittest.TestCase):
     def test_every_image_the_readme_shows_exists(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -891,7 +922,7 @@ class InstallerTests(unittest.TestCase):
         # this machine (claude, codex, agy) do not change the result.
         self.tools = root / "tools"
         self.tools.mkdir()
-        for tool in ("dirname", "readlink", "mkdir", "ln", "rm", "sed", "python3"):
+        for tool in ("dirname", "readlink", "mkdir", "ln", "rm", "sed", "python3", "id"):
             found = shutil.which(tool)
             assert found is not None
             (self.tools / tool).symlink_to(found)
@@ -1006,7 +1037,7 @@ class InstallerTests(unittest.TestCase):
         self.install()
         result = self.uninstall()
         self.assertIn("does not touch", result.stdout)
-        self.assertIn("filo-runtime", result.stdout)
+        self.assertIn("/tmp/filo-", result.stdout)
         self.assertIn("adapters.json", result.stdout)
 
     def test_unknown_options_are_refused(self) -> None:

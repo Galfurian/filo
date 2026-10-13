@@ -1,3 +1,5 @@
+# shellcheck shell=sh
+# shellcheck disable=SC2154,SC2034  # repo_dir comes from the caller; tab is used by the caller
 # Shared by install.sh and uninstall.sh. Sourced, not run.
 # The caller sets $repo_dir (this checkout) before sourcing.
 

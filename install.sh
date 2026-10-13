@@ -6,9 +6,10 @@
 #   ./install.sh --dry-run  show what it would do and change nothing
 #
 # `./uninstall.sh` removes exactly what this script creates.
+# shellcheck disable=SC2016  # the backticks in the messages are literal text
 set -eu
 
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$repo_dir/scripts/common.sh"
 
 dry_run=0

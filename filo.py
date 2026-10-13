@@ -22,6 +22,7 @@ import secrets
 import signal
 import socket
 import sqlite3
+import stat
 import struct
 import subprocess
 import sys
@@ -32,7 +33,7 @@ from pathlib import Path
 from typing import Any, cast
 
 APP = "filo"
-DEFAULT_RUNTIME = "/tmp/filo-runtime"
+DEFAULT_RUNTIME = "/tmp/filo"
 SOCKET_TIMEOUT = 1.0
 SERVER_TIMEOUT = 2.0
 MAX_FRAME = 4 * 1024 * 1024
@@ -93,7 +94,25 @@ def scope_path(scope: str) -> str | None:
 
 
 def runtime_root() -> Path:
-    return Path(os.environ.get("FILO_DIR", DEFAULT_RUNTIME)).expanduser()
+    """The directory that holds all state, private to this user.
+
+    The default is ``/tmp/filo-<uid>``, so two users never share a name. A directory
+    that is a link, is not a directory, or belongs to someone else is refused: anyone
+    could have made it before us, and the sockets and tokens inside would be theirs.
+    One that is ours but too open is closed to ``0700``.
+    """
+    path = Path(os.environ.get("FILO_DIR", f"{DEFAULT_RUNTIME}-{os.getuid()}")).expanduser()
+    try:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = path.lstat()
+    except OSError as exc:
+        raise UserError(f"runtime directory {path}: {exc.strerror or exc}") from exc
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise UserError(f"{path} is not a plain directory of yours, so filo will not use it; "
+                        f"remove it or set FILO_DIR to another")
+    if info.st_mode & 0o077:
+        os.chmod(path, 0o700)
+    return path
 
 
 def scope_directory(scope: str) -> Path:

@@ -6,7 +6,7 @@
 #   ./uninstall.sh --dry-run  show what it would do and change nothing
 set -eu
 
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$repo_dir/scripts/common.sh"
 
 dry_run=0
@@ -18,7 +18,7 @@ case "${1:-}" in
 esac
 
 printf 'filo, removed for the checkout at %s\n\nThis will:\n' "$repo_dir"
-links | while IFS="$tab" read -r what target source required command; do
+links | while IFS="$tab" read -r what target source _ _; do
     if owned "$target" "$source"; then
         printf '  - remove the link %s  (%s)\n' "$target" "$what"
     elif [ -e "$target" ] || [ -L "$target" ]; then
@@ -27,7 +27,7 @@ links | while IFS="$tab" read -r what target source required command; do
         printf '  - nothing to do for %s: not there\n' "$target"
     fi
 done
-runtime=${FILO_DIR:-/tmp/filo-runtime}
+runtime=${FILO_DIR:-/tmp/filo-$(id -u)}
 printf '\nIt does not touch these; delete them yourself if you want them gone:\n'
 printf '  - %s  (sessions, spool; holds the tokens of registered agy sessions)\n' "$runtime"
 printf '  - %s  (your adapters file, if you made one)\n' "${FILO_ADAPTERS:-$HOME/.config/filo/adapters.json}"
@@ -39,7 +39,7 @@ if [ "$dry_run" = 1 ]; then
 fi
 
 printf '\n'
-links | while IFS="$tab" read -r what target source required command; do
+links | while IFS="$tab" read -r what target source _ _; do
     if owned "$target" "$source"; then
         rm "$target"
         printf 'removed %s\n' "$target"

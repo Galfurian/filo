@@ -7,6 +7,8 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <a href="https://github.com/Galfurian/filo/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Galfurian/filo/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/Galfurian/filo/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/Galfurian/filo/actions/workflows/codeql.yml/badge.svg"></a>
   <img alt="Python 3.10 or later" src="https://img.shields.io/badge/python-3.10%2B-blue">
   <img alt="No dependencies" src="https://img.shields.io/badge/dependencies-none-brightgreen">
 </p>
@@ -130,7 +132,7 @@ executable; if yours is not, the installer stops and says so.)
 
 It never overwrites an existing file or a link it did not create. The
 uninstaller removes only links that point into this checkout. It leaves the
-runtime state (`/tmp/filo-runtime`, which holds agy tokens), your adapters file
+runtime state (`/tmp/filo-<your uid>`, which holds agy tokens), your adapters file
 and this checkout, and says so. Override the locations with `FILO_BIN_DIR`,
 `FILO_CLAUDE_SKILLS`, `FILO_AGENTS_SKILLS`, `FILO_AGY_SKILLS` and `FILO_OPENCODE_DIR`. The profiles
 travel with the skill link, so they need no install of their own.
@@ -221,7 +223,7 @@ offer a way to push a message into a running session from outside: Codex has
 
 ## What it keeps and forgets
 
-Runtime state lives under `/tmp/filo-runtime` (or `FILO_DIR`): sockets,
+Runtime state lives under `/tmp/filo-<your uid>` (or `FILO_DIR`): sockets,
 the spool and small metadata files, all mode `0600`/`0700`. A registration is
 forgotten when fewer of that client's processes run in the directory than there
 are registrations (the newest are kept); `who` and `send` do this check. `who`
@@ -240,6 +242,10 @@ A client with `capture_env` leaves secrets in its registration file. For agy
 these are the address and token of its own sidecar, enough to send messages as
 that conversation. The file is mode `0600` and lives until the registration is
 forgotten, which happens when the session's process is gone.
+
+The runtime directory is private to your user, and filo refuses one that is a link or
+belongs to someone else. The full trust model, what filo does not protect against, and how
+to report a problem are in [SECURITY.md](SECURITY.md).
 
 ## Development
 

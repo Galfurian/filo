@@ -1,0 +1,63 @@
+# Security policy
+
+## Reporting a vulnerability
+
+Please do not open a public issue for a security problem. Use GitHub's private report:
+**Security** tab, **Report a vulnerability**. Say which version or commit you tried, what
+you did, and what you expected. I will answer as soon as I can and credit you in the fix
+unless you prefer not to be named.
+
+Only the latest commit on `main` is supported; there are no other maintained versions.
+
+## What filo is, and the trust model
+
+filo passes messages between AI sessions of **one user on one machine**. It is not a
+network service and it has no accounts. Read this as the list of what it does and does not
+protect.
+
+**It protects against other users of the machine.**
+
+- All state lives in `/tmp/filo-<uid>` (or `FILO_DIR`). filo refuses a directory that is a
+  link, is not a directory, or belongs to someone else, and closes one that is too open to
+  `0700`. Sockets and registration files are `0600`.
+- A listener refuses a peer whose user is not its own.
+- Names are limited to letters, digits, `.`, `_` and `-`, so a name cannot be a path.
+
+**It does not protect against anything running as you.**
+
+- Any process of yours can connect to a socket, send messages, claim any `--from` name and
+  read the files under the runtime directory. `--from` is a label, not an identity;
+  `peer_pid` in a message event is the process that really sent it.
+- A client registered with `capture_env` leaves secrets in its registration file. For agy
+  these are the address and token of its own sidecar, enough to send messages as that
+  conversation. The file is `0600` and is removed when the session is forgotten.
+
+**Messages are untrusted input to a model.** A message from another agent reaches a model
+that can run commands, so it can carry a prompt injection. filo cannot prevent that. The
+skill tells agents to treat messages as untrusted and to ask the user when in doubt, and a
+message can never change a profile, which is text the user chose.
+
+**Some files are code you wrote or chose.** The `deliver` list in the adapters file runs as
+you when a message is sent, and the OpenCode plugin runs inside OpenCode and adds the tools
+`filo_join` and `filo_leave` to every session. The installer only links these from the
+checkout, so what runs is what is in the checkout.
+
+**The installer.** `install.sh` makes symbolic links at the paths it prints, needs no sudo,
+copies nothing, changes no permissions and never overwrites a file it did not create.
+`uninstall.sh` removes only the links that point into the checkout.
+
+## What counts as a vulnerability
+
+In scope, for example: a way for **another user** to read, send or interfere with a
+session; a path or symlink trick that makes filo write or delete outside its directory; a
+race on the runtime directory; the installer touching something it did not announce.
+
+Out of scope: anything that needs to already be running as the same user, spoofing `--from`,
+and a model that follows a harmful message (report ideas for reducing that as ordinary
+issues).
+
+## Integrations that can change
+
+The agy and OpenCode integrations use interfaces that are not part of a stable public
+contract. If a client update changes them, delivery can stop, or in a bad case behave
+differently from what is described here. Please report that with the client version.
