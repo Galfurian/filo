@@ -21,7 +21,6 @@ import re
 import secrets
 import signal
 import socket
-import sqlite3
 import stat
 import struct
 import subprocess
@@ -490,41 +489,8 @@ class Adapter:
     deliver: Callable[[str, str, str, dict[str, str]], str]
     id_env: str | None = None
     process: str | None = None
-    discover: Callable[[str], str] | None = None
     capture_env: tuple[str, ...] = ()
     alive: Callable[[dict[str, str]], bool] | None = None
-
-
-def codex_thread(scope: str) -> str:
-    """Newest interactive Codex thread whose working directory is this scope.
-
-    Codex keeps its threads in ``$CODEX_HOME/state_N.sqlite``. The schema is
-    internal, so every failure is reported as a normal error rather than a trace.
-    """
-    directory = scope_path(scope)
-    if directory is None:
-        raise UserError("send: Codex threads are tied to a directory; use a path scope")
-    home = Path(os.environ.get("FILO_CODEX_HOME", "~/.codex")).expanduser()
-    versions = {int(m.group(1)): p for p in home.glob("state_*.sqlite")
-                if (m := re.fullmatch(r"state_(\d+)\.sqlite", p.name))}
-    if not versions:
-        raise UserError(f"send: no Codex state database found in {home}")
-    database = versions[max(versions)]
-    try:
-        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=2)
-        try:
-            row = connection.execute(
-                "select id from threads where cwd = ? and archived = 0 "
-                "and thread_source = 'user' and source != 'exec' "
-                "order by updated_at desc limit 1", (directory,),
-            ).fetchone()
-        finally:
-            connection.close()
-    except sqlite3.Error as exc:
-        raise UserError(f"send: cannot read the Codex thread list ({exc})") from exc
-    if row is None:
-        raise UserError(f"send: no Codex thread for {directory}; start codex there and send it a first message")
-    return str(row[0])
 
 
 def run_delivery(argv: list[str], label: str, env: dict[str, str] | None = None) -> None:
@@ -605,7 +571,7 @@ def command_adapter(client: str, spec: Any) -> Adapter:
 def adapters() -> dict[str, Adapter]:
     """Built-in adapters plus the ones in ``$FILO_ADAPTERS`` or ``~/.config/filo/adapters.json``."""
     found = {"codex": Adapter("codex", codex_deliver, id_env="CODEX_THREAD_ID",
-                              process="codex", discover=codex_thread),
+                              process="codex"),
              "agy": Adapter("agy", agy_deliver, id_env="ANTIGRAVITY_CONVERSATION_ID",
                             process="agy", capture_env=AGY_ENV, alive=agy_alive)}
     path = Path(os.environ.get("FILO_ADAPTERS", "~/.config/filo/adapters.json")).expanduser()
@@ -701,10 +667,11 @@ def read_registrations(scope: str) -> list[Registration]:
 def live_registrations(scope: str) -> list[Registration]:
     """Registrations whose session still seems to exist.
 
-    A client with a known process name is checked against the process table: if
-    N of its processes run in this directory only the N newest registrations are
-    kept, and the rest are removed. Inside a sandbox the table is not trusted
-    and nothing is removed.
+    A client with a known process name is checked against the process table: if none of its
+    processes run in this directory, its registrations are removed. When some run but fewer
+    than there are registrations, which ones ended cannot be told, so none is removed: an old
+    registration is better than losing a session that is alive. Inside a sandbox the table
+    is not trusted and nothing is removed.
     """
     rows = read_registrations(scope)
     directory = scope_path(scope)
@@ -730,9 +697,10 @@ def live_registrations(scope: str) -> list[Registration]:
         if cwds is None:
             kept += group
             continue
-        alive = sum(1 for cwd in cwds if cwd == directory)
-        kept += group[:alive]
-        for stale in group[alive:]:
+        if any(cwd == directory for cwd in cwds):
+            kept += group
+            continue
+        for stale in group:
             unlink_if_present(stale.path)
     return sorted(kept, key=lambda row: row.name)
 
@@ -767,9 +735,6 @@ def register(args: argparse.Namespace) -> int:
         raise UserError(f"register: unknown client {client!r}; known: {', '.join(sorted(known))}")
     adapter = known[client]
     session = args.session or (os.environ.get(adapter.id_env, "") if adapter.id_env else "")
-    guessed = False
-    if not session and adapter.discover is not None:
-        session, guessed = adapter.discover(scope), True
     if not session:
         hint = f" (set ${adapter.id_env} or pass --session)" if adapter.id_env else " (pass --session)"
         raise UserError(f"register: no session id for {client}{hint}")
@@ -799,7 +764,6 @@ def register(args: argparse.Namespace) -> int:
         print(json.dumps({"kind": "registered", "name": name, "client": client, "session": session}), flush=True)
     else:
         print(f"registered as {name} for {client} session {session}"
-              + (" (newest of this directory)" if guessed else "")
               + (f"; use --from {name} when you send" if name != client else ""))
     return 0
 
@@ -910,9 +874,6 @@ def adapter_target(scope: str, recipient: str) -> tuple[Adapter, str, dict[str, 
     for row in live_registrations(scope):
         if row.name == recipient and row.client in known:
             return known[row.client], row.session, row.env
-    adapter = known.get(recipient)
-    if adapter is not None and adapter.discover is not None:
-        return adapter, adapter.discover(scope), {}
     return None
 
 
@@ -936,6 +897,9 @@ def deliver_offline(scope: str, recipient: str, sender: str, body: str, message_
         spool_message(scope, recipient, sender, body, message_id)
         return (f"{recipient} is offline: queued ({message_id}) for up to "
                 f"{int(spool_ttl() // 60)} minutes, delivered when it joins again")
+    if recipient in adapters():
+        raise UserError(f"{recipient!r} has not registered here, and filo does not guess which {recipient} "
+                        f"session you mean: run /filo in it, then 'filo who' to see its name")
     raise UserError(f"recipient {recipient!r} is not connected and has not been seen here; "
                      f"run 'filo who' to see who is")
 
