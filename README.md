@@ -53,7 +53,7 @@ filo send --to codex --from claude --message 'Please review the storage change.'
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/overview-dark.svg">
-    <img src="docs/images/overview-light.svg" alt="You start each session and run /filo manager; a message reaches a listening Claude session over a Unix socket, registered Codex and agy sessions through their adapters, and a session that is away through a spool emptied when it rejoins" width="100%">
+    <img src="docs/images/overview-light.svg" alt="You start each session and run /filo manager; a message reaches a listening Claude session over a Unix socket, an OpenCode session through its plugin, registered Codex and agy sessions through their adapters, and a session that is away through a spool emptied when it rejoins" width="100%">
   </picture>
 </p>
 
