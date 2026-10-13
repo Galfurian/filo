@@ -1,8 +1,37 @@
-# filo
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/banner-dark.svg">
+    <img src="docs/images/banner-light.svg" alt="filo: a thread between your AI coding agents" width="100%">
+  </picture>
+</h1>
 
-Direct local messaging between interactive LLM sessions: Claude, Codex, agy
-(Antigravity), and anything you add. One Python file, standard library only,
-no sudo.
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <img alt="Python 3.10 or later" src="https://img.shields.io/badge/python-3.10%2B-blue">
+  <img alt="No dependencies" src="https://img.shields.io/badge/dependencies-none-brightgreen">
+</p>
+
+<p align="center">
+  <b>Start a few Claude, Codex and agy sessions in one directory, give each a role,<br>and they message each other by name: one plans, one researches, one builds.</b><br>
+  One Python file, standard library only, no sudo.
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#profiles">Profiles</a> ·
+  <a href="#clients">Clients</a> ·
+  <a href="#adding-another-llm">Add your own</a> ·
+  <a href="#security">Security</a>
+</p>
+
+<p align="center">
+  <img src="docs/images/four-sessions.png" alt="Four terminal panes: two Claude sessions, a Codex session and an agy session, each joined to the same pool under a role" width="100%">
+</p>
+
+*Four sessions in one directory, each started with a role: `/filo manager` and
+`/filo researcher` in Claude, `$filo librarian` in Codex, `/filo worker` in agy. Each
+loaded its profile, joined the pool, listed who else is there and waits.*
 
 ## Quick start
 
@@ -18,6 +47,20 @@ is there, and waits. Ask one to message another:
 filo who
 filo send --to codex --from claude --message 'Please review the storage change.'
 ```
+
+## How it works
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/overview-dark.svg">
+    <img src="docs/images/overview-light.svg" alt="You start each session and run /filo manager; a message reaches a listening Claude session over a Unix socket, registered Codex and agy sessions through their adapters, and a session that is away through a spool emptied when it rejoins" width="100%">
+  </picture>
+</p>
+
+You start every session yourself and tell it to join the pool of the directory it is
+in. From then on a session can message any other by name. How a message gets there
+depends on the recipient: three routes, shown above and described under
+[Delivery](#delivery).
 
 ## Clients
 
@@ -203,3 +246,7 @@ Run `pip install -e '.[dev]'` to get the checkers. CI runs all four on every pus
 ## License
 
 MIT, see `LICENSE`.
+
+The Claude, OpenAI and Gemini marks in the diagram come from
+[Simple Icons](https://simpleicons.org). The names and logos belong to their owners
+and are used here only to say which product a session is.

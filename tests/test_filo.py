@@ -846,6 +846,16 @@ class ProfileTests(RuntimeCase):
         self.assertEqual(self.msg("profile", "a/b").returncode, 1)
 
 
+class ReadmeTests(unittest.TestCase):
+    def test_every_image_the_readme_shows_exists(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        shown = re.findall(r'(?:src|srcset)="([^"]+)"|!\[[^\]]*\]\(([^)]+)\)', readme)
+        paths = {path for first, second in shown if not (path := first or second).startswith("http")}
+        self.assertTrue(paths)
+        for path in sorted(paths):
+            self.assertTrue((ROOT / path).is_file(), path)
+
+
 class InstallerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.base = tempfile.TemporaryDirectory()
