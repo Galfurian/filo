@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, cast
 
 APP = "filo"
+__version__ = "0.1.0"
 DEFAULT_RUNTIME = "/tmp/filo"
 SOCKET_TIMEOUT = 1.0
 # A Unix socket path must fit in sockaddr_un: 103 bytes and a NUL on macOS and the BSDs, 107 on Linux.
@@ -1086,6 +1087,7 @@ def command_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("--version", action="version", version=f"{APP} {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     join_parser = sub.add_parser("join", help="join a scope and listen until interrupted")

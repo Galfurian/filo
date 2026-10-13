@@ -1,0 +1,22 @@
+name: Feature request
+description: A client, a profile or a behaviour you would like
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation first; the solution can come after.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like filo to do?
+    validations:
+      required: true
+  - type: textarea
+    id: client
+    attributes:
+      label: For a new client
+      description: How a message can be pushed into one of its running sessions from outside, and which version you looked at.
