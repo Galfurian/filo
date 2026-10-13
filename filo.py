@@ -35,6 +35,8 @@ from typing import Any, cast
 APP = "filo"
 DEFAULT_RUNTIME = "/tmp/filo"
 SOCKET_TIMEOUT = 1.0
+# A Unix socket path must fit in sockaddr_un: 103 bytes and a NUL on macOS and the BSDs, 107 on Linux.
+SOCKET_PATH_LIMIT = 103 if sys.platform != "linux" else 107
 SERVER_TIMEOUT = 2.0
 MAX_FRAME = 4 * 1024 * 1024
 NAME_ALPHABET = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
@@ -116,7 +118,7 @@ def runtime_root() -> Path:
 
 
 def scope_directory(scope: str) -> Path:
-    digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:32]
+    digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:16]
     directory = runtime_root() / digest
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
@@ -921,6 +923,9 @@ def claim_listener_name(scope: str, base: str, exact: bool) -> tuple[str, socket
     for number in range(1, 100):
         name = base if number == 1 else f"{base}-{number}"
         socket_file = socket_path(scope, name)
+        if len(os.fsencode(str(socket_file))) > SOCKET_PATH_LIMIT:
+            raise UserError(f"the socket path is too long for this system ({SOCKET_PATH_LIMIT} bytes at most): "
+                            f"{socket_file}; set FILO_DIR to a shorter directory")
         metadata = metadata_path(scope, name)
         in_use = (scope_directory(scope) / f"{name}.reg").exists() or (
             metadata.exists() and listener_is_live(scope, name))

@@ -17,6 +17,10 @@ from pathlib import Path
 from typing import Any, cast
 from unittest import mock
 
+# macOS temporary directories are too long for a Unix socket path (104 bytes at most).
+if sys.platform == "darwin":
+    tempfile.tempdir = "/tmp"
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "filo.py"
 
@@ -843,6 +847,15 @@ def load_filo() -> Any:
 
 
 class PlatformTests(unittest.TestCase):
+    def test_a_runtime_directory_whose_sockets_could_not_bind_is_named_as_the_problem(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            deep = Path(raw, "a" * 60, "b" * 60)
+            result = subprocess.run([sys.executable, str(SCRIPT), "join", "--as", "x", "--json"],
+                                    env={**os.environ, "FILO_DIR": str(deep)}, cwd=raw,
+                                    capture_output=True, text=True, timeout=20, check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("socket path is too long", result.stderr)
+
     def test_lsof_output_is_read_for_the_command_that_was_asked_about(self) -> None:
         output = "p101\ncfoo\nfcwd\nn/home/a\np102\nccodex\nfcwd\nn/home/b\np103\nccodex\nfcwd\nn/home/c\n"
         self.assertEqual(load_filo().parse_lsof(output, "codex"), ["/home/b", "/home/c"])
