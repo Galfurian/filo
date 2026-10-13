@@ -195,13 +195,15 @@ class CodexQueueRouteTests(unittest.TestCase):
 
     def start_codex(self, count: int = 1, cwd: Path | None = None) -> None:
         """Run ``count`` processes that look like Codex sessions in the scope."""
-        link = self.live_dir / "codex"
-        if not link.exists():
-            link.symlink_to(sys.executable)
+        # A copy of a plain binary, so that the process is called "codex" on every system;
+        # a link to Python would be started again under another name on macOS.
+        program = self.live_dir / "codex"
+        if not program.exists():
+            sleep = shutil.which("sleep")
+            assert sleep is not None
+            shutil.copy(sleep, program)
         for _ in range(count):
-            self.live.append(subprocess.Popen(
-                [str(link), "-c", "import time; time.sleep(120)"], cwd=cwd or self.scope,
-            ))
+            self.live.append(subprocess.Popen([str(program), "120"], cwd=cwd or self.scope))
         time.sleep(0.2)
 
     def threads(self, rows: list[tuple[str, str, int, str, str, int]]) -> None:
