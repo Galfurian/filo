@@ -28,8 +28,21 @@ jobs:
       - name: Sign the archive
         run: cosign sign-blob --yes --bundle "filo-${GITHUB_REF_NAME#v}.tar.gz.sigstore.json" "filo-${GITHUB_REF_NAME#v}.tar.gz"
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        id: provenance
         with:
           subject-path: filo-*.tar.gz
+      - name: Keep the provenance as a file of the release
+        env:
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          text = open(os.environ["BUNDLE"], encoding="utf-8").read().lstrip()
+          bundle, _ = json.JSONDecoder().raw_decode(text)
+          name = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          with open(f"filo-{name}.intoto.jsonl", "w", encoding="utf-8") as out:
+              out.write(json.dumps(bundle, separators=(",", ":")) + "\n")
+          PY
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -37,4 +50,4 @@ jobs:
           sha256sum filo-*.tar.gz > SHA256SUMS
           notes="docs/releases/$GITHUB_REF_NAME.md"
           test -f "$notes" || { echo "no release notes in $notes"; exit 1; }
-          gh release create "$GITHUB_REF_NAME" filo-*.tar.gz filo-*.tar.gz.sigstore.json SHA256SUMS --title "filo ${GITHUB_REF_NAME#v}" --notes-file "$notes" --verify-tag
+          gh release create "$GITHUB_REF_NAME" filo-*.tar.gz filo-*.tar.gz.sigstore.json filo-*.intoto.jsonl SHA256SUMS --title "filo ${GITHUB_REF_NAME#v}" --notes-file "$notes" --verify-tag
