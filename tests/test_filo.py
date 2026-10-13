@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -844,8 +845,49 @@ def load_filo() -> Any:
     spec = importlib.util.spec_from_file_location("filo_under_test", SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module   # dataclasses look their own module up here
     spec.loader.exec_module(module)
     return module
+
+
+class NameClaimTests(unittest.TestCase):
+    def test_only_one_of_many_simultaneous_claims_gets_a_name(self) -> None:
+        module = load_filo()
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "codex.reg"
+            results: list[bool] = []
+            start = threading.Barrier(16)
+
+            def claim(number: int) -> None:
+                start.wait()
+                results.append(module.write_metadata(path, {"name": "codex", "n": number}, exclusive=True))
+
+            threads = [threading.Thread(target=claim, args=(number,)) for number in range(16)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(results.count(True), 1)
+            self.assertEqual(sorted(entry.name for entry in Path(raw).iterdir()), ["codex.reg"])
+
+    def test_sessions_that_register_at_the_same_time_get_different_names(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            environment = {**os.environ, "FILO_DIR": f"{raw}/rt"}
+            scope = Path(raw, "project")
+            scope.mkdir()
+            processes = [subprocess.Popen(
+                [sys.executable, str(SCRIPT), "register", "--as", "codex", "--session", f"session-{number:04d}"],
+                cwd=scope, env=environment, stdout=subprocess.PIPE, text=True) for number in range(8)]
+            for process in processes:
+                process.wait(timeout=30)
+                if process.stdout is not None:
+                    process.stdout.close()
+            who = subprocess.run([sys.executable, str(SCRIPT), "who", "--json"], cwd=scope,
+                                 env={**environment, "FILO_NO_PRUNE": "1"}, capture_output=True, text=True,
+                                 check=True, timeout=30)
+            names = [row["name"] for row in json.loads(who.stdout)["registered"]]
+            self.assertEqual(len(names), 8)
+            self.assertEqual(len(set(names)), 8)
 
 
 class PlatformTests(unittest.TestCase):

@@ -141,12 +141,24 @@ def unlink_if_present(path: Path) -> None:
         pass
 
 
-def write_metadata(path: Path, data: JsonObject) -> None:
+def write_metadata(path: Path, data: JsonObject, exclusive: bool = False) -> bool:
+    """Write ``data`` to ``path`` in one step. With ``exclusive`` it is written only if ``path``
+    does not exist, and the answer says whether it was: that is how a name is claimed by
+    one process and never by two. Without it an existing file is replaced, and the answer is True."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     temporary.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
     os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
+    if not exclusive:
+        os.replace(temporary, path)
+        return True
+    try:
+        os.link(temporary, path)   # fails when the name exists, and the file appears already complete
+        return True
+    except FileExistsError:
+        return False
+    finally:
+        unlink_if_present(temporary)
 
 
 def as_object(value: Any, what: str) -> JsonObject:
@@ -710,12 +722,18 @@ def taken_names(scope: str) -> set[str]:
     return {path.stem for pattern in ("*.json", "*.reg") for path in directory.glob(pattern)}
 
 
-def free_name(scope: str, base: str) -> str:
-    """``base``, or ``base-2``, ``base-3``... when earlier ones are taken."""
+def claim_free_name(scope: str, base: str, registration: Callable[[str], JsonObject]) -> str:
+    """Register under ``base``, or ``base-2``, ``base-3``... when earlier ones are taken.
+
+    The name is taken by creating its file, which only one process can do, so two sessions
+    registering at the same moment never end up with the same name.
+    """
     taken = taken_names(scope)
     for number in range(1, 100):
         name = base if number == 1 else f"{base}-{number}"
-        if name not in taken:
+        if name in taken:
+            continue
+        if write_metadata(scope_directory(scope) / f"{name}.reg", registration(name), exclusive=True):
             return name
     raise UserError(f"no free name left for {base!r}")
 
@@ -738,18 +756,24 @@ def register(args: argparse.Namespace) -> int:
     if not SESSION_ID.fullmatch(session):
         raise UserError(f"register: {session!r} is not a valid session id")
     same = [row for row in read_registrations(scope) if row.client == client and row.session == session]
-    if args.chosen:
-        name = valid_name(args.chosen, "--name")
-        if name in taken_names(scope) and not (same and same[0].name == name):
-            raise UserError(f"register: the name {name!r} is taken here")
-    else:
-        name = same[0].name if same else free_name(scope, client)
-    if same and same[0].name != name:
-        unlink_if_present(same[0].path)
     captured = {key: os.environ[key] for key in adapter.capture_env if key in os.environ}
-    write_metadata(scope_directory(scope) / f"{name}.reg", {
-        "name": name, "client": client, "session": session, "registered_ns": time.time_ns(), "env": captured,
-    })
+
+    def registration(name: str) -> JsonObject:
+        return {"name": name, "client": client, "session": session, "registered_ns": time.time_ns(), "env": captured}
+
+    chosen = valid_name(args.chosen, "--name") if args.chosen else None
+    if same and chosen in (None, same[0].name):
+        name = same[0].name   # this session again: its own file is replaced
+        write_metadata(scope_directory(scope) / f"{name}.reg", registration(name))
+    elif chosen:
+        name = chosen
+        if name in taken_names(scope) or not write_metadata(
+                scope_directory(scope) / f"{name}.reg", registration(name), exclusive=True):
+            raise UserError(f"register: the name {name!r} is taken here")
+        if same:
+            unlink_if_present(same[0].path)
+    else:
+        name = claim_free_name(scope, client, registration)
     mark_known(scope, name, "registered")
     if args.json:
         print(json.dumps({"kind": "registered", "name": name, "client": client, "session": session}), flush=True)
@@ -769,12 +793,11 @@ def rename(args: argparse.Namespace) -> int:
         raise UserError(f"rename: {old!r} is not a registered session here"
                         + ("; a listener changes its name by running 'filo join --as NEW'"
                            if metadata_path(scope, old).exists() else ""))
-    if new in taken_names(scope):
-        raise UserError(f"rename: the name {new!r} is taken here")
     row = found[0]
-    write_metadata(scope_directory(scope) / f"{new}.reg", {
-        "name": new, "client": row.client, "session": row.session, "registered_ns": row.registered_ns, "env": row.env,
-    })
+    if new in taken_names(scope) or not write_metadata(scope_directory(scope) / f"{new}.reg", {
+            "name": new, "client": row.client, "session": row.session, "registered_ns": row.registered_ns,
+            "env": row.env}, exclusive=True):
+        raise UserError(f"rename: the name {new!r} is taken here")
     forget_registration(scope, row)
     mark_known(scope, new, "registered")
     print(f"renamed {old} to {new}; use --from {new} when you send")
