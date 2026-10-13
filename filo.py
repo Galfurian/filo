@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any, cast
 
 APP = "filo"
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 DEFAULT_RUNTIME = "/tmp/filo"
 SOCKET_TIMEOUT = 1.0
 # A Unix socket path must fit in sockaddr_un: 103 bytes and a NUL on macOS and the BSDs, 107 on Linux.
