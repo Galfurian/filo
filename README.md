@@ -200,6 +200,20 @@ variables, which were found by inspecting the CLI and not in documentation; for
 OpenCode, the plugin API. If a client updates and delivery stops, that is the first
 place to look; reports with the version are welcome.
 
+## Troubleshooting
+
+- **`recipient 'X' is not connected and has not been seen here`**: X never joined in this
+  directory, or ran `filo leave`. `filo who` shows who is here; sessions in other
+  directories never see each other.
+- **`X is offline: queued`**: X is a listener that is away. The message waits for an hour
+  and arrives when it rejoins.
+- **agy** must run `filo register` from inside its own session, because it copies the
+  session's address and token. **OpenCode** needs a restart after `./install.sh`, so that
+  it loads the plugin.
+- **`the socket path is too long`**: a Unix socket path has a limit (103 bytes on macOS,
+  107 on Linux). Set `FILO_DIR` to a shorter directory.
+- In a bug report, give `filo --version` and the versions of the clients.
+
 ## Adding another LLM
 
 Describe how to wake it in `~/.config/filo/adapters.json` (or the file named
@@ -257,6 +271,9 @@ to report a problem are in [SECURITY.md](SECURITY.md).
 
 ## Development
 
+Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md) for what filo is meant to
+stay, how a change is made, and how to add a client or a profile.
+
 ```sh
 python3 -m unittest discover -s tests -v   # tests
 pyright                                    # strict on filo.py, standard on tests
@@ -267,8 +284,8 @@ ruff check .
 The type-checker settings live in `pyproject.toml`, so the result does not depend
 on local configuration.
 
-Run `pip install -e '.[dev]'` to get the checkers. CI runs all four, and ShellCheck on the
-installer, on every push, with the versions in `requirements-dev.txt` and their hashes
+Run `pip install -e '.[dev]'` to get the checkers. CI runs all four, ShellCheck on the
+installer, and `actionlint` and `zizmor` on the workflows, on every push, with the versions in `requirements-dev.txt` and their hashes
 checked. After changing the `dev` list in `pyproject.toml`, regenerate it with
 `uv pip compile pyproject.toml --extra dev --universal --python-version 3.10 --generate-hashes -o requirements-dev.txt`.
 

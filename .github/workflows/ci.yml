@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -26,6 +30,8 @@ jobs:
       - run: mypy
       - run: pyright
       - run: shellcheck -s sh install.sh uninstall.sh scripts/common.sh
+      - run: actionlint
+      - run: zizmor --offline .github/workflows
 
   test-macos:
     runs-on: macos-latest

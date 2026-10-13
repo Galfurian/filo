@@ -1,0 +1,55 @@
+name: Bug report
+description: Something does not work as the README says
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: filo version
+      description: The output of `filo --version`.
+      placeholder: filo 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System
+      description: Operating system and Python version.
+      placeholder: Ubuntu 24.04 on WSL2, Python 3.12
+    validations:
+      required: true
+  - type: textarea
+    id: clients
+    attributes:
+      label: Clients and their versions
+      description: Which of Claude Code, Codex, agy and OpenCode were involved, and their versions.
+      placeholder: |
+        Claude Code 2.1.296
+        OpenCode 1.18.31
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did
+      description: The commands and the messages you typed, in order.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened instead
+    validations:
+      required: true
+  - type: textarea
+    id: who
+    attributes:
+      label: Output of `filo who` and of the failing command
+      render: shell
+  - type: checkboxes
+    id: secrets
+    attributes:
+      label: Before you send
+      options:
+        - label: I removed tokens and anything private from what I pasted (the registration of an agy session holds one).
+          required: true

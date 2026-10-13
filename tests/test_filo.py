@@ -945,6 +945,16 @@ class WorkflowTests(unittest.TestCase):
                 self.assertIn("--require-hashes", command, f"{workflow.name}: pip install without hash checking")
 
 
+class VersionTests(unittest.TestCase):
+    def test_the_command_reports_the_version_the_package_declares(self) -> None:
+        match = re.search(r'(?m)^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        assert match is not None
+        result = subprocess.run([sys.executable, str(SCRIPT), "--version"], capture_output=True, text=True,
+                                check=False, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), f"filo {match.group(1)}")
+
+
 class ReleaseTests(unittest.TestCase):
     def test_the_current_version_has_release_notes(self) -> None:
         text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")

@@ -7,14 +7,15 @@ on:
   push:
     branches: [main]
 
-permissions: read-all
+permissions:
+  contents: read
 
 jobs:
   analysis:
     runs-on: ubuntu-latest
     permissions:
-      security-events: write
-      id-token: write
+      security-events: write # upload the results to code scanning
+      id-token: write # publish the score, so the badge works
       contents: read
       actions: read
     steps:
