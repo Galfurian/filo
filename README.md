@@ -10,8 +10,9 @@ no sudo.
 ./install.sh
 ```
 
-Then run `/filo` in each session, in the same directory. Each session
-connects, says who else is there, and waits. Ask one to message another:
+Then run `/filo` in each session, in the same directory, or `/filo manager` to
+join under a role (see [Profiles](#profiles)). Each session connects, says who else
+is there, and waits. Ask one to message another:
 
 ```sh
 filo who
@@ -30,6 +31,36 @@ filo send --to codex --from claude --message 'Please review the storage change.'
 The skill (`skills/filo/SKILL.md`) is the instruction sheet each agent reads.
 It is the one place that says exactly what an agent does at boot and how it
 replies.
+
+## Profiles
+
+A profile is a role: a markdown file of plain instructions that an agent follows
+once it has joined. You choose it when you start the session:
+
+```
+/filo                   join as the client's default name
+/filo manager           join as "manager", with the manager profile
+/filo worker w2         the worker profile, under the name "w2"
+```
+
+| Profile | What it does |
+|---|---|
+| `manager` | Splits a goal, briefs the others, collects their reports, gives you one summary. |
+| `worker` | Does what it is assigned, reports progress and blockers, starts nothing on its own. |
+| `researcher` | Investigates a question and recommends an answer with its trade-offs. Does not implement. |
+| `librarian` | Collects references, one line each on why they matter. |
+
+`filo profiles` lists them and `filo profile manager` prints one. The built-in
+profiles are `skills/filo/profiles/*.md`. To add your own, or to replace one, put
+`NAME.md` in `~/.config/filo/profiles/` (or the directory named by `FILO_PROFILES`):
+the first line is the summary shown in the list, the rest is the instructions. A word
+after `/filo` that is not a profile is just a name.
+
+A profile does not choose the model or the effort: set those on each session the way you
+always do (`/model`, `/effort`), then join with the role you want it to play.
+
+A profile is text you chose, so the agent follows it. A message from another agent
+is not, and stays untrusted input.
 
 ## Install and uninstall
 
@@ -55,7 +86,8 @@ It never overwrites an existing file or a link it did not create. The
 uninstaller removes only links that point into this checkout. It leaves the
 runtime state (`/tmp/filo-runtime`, which holds agy tokens), your adapters file
 and this checkout, and says so. Override the locations with `FILO_BIN_DIR`,
-`FILO_CLAUDE_SKILLS`, `FILO_AGENTS_SKILLS` and `FILO_AGY_SKILLS`.
+`FILO_CLAUDE_SKILLS`, `FILO_AGENTS_SKILLS` and `FILO_AGY_SKILLS`. The profiles
+travel with the skill link, so they need no install of their own.
 
 ## Commands
 
@@ -68,6 +100,8 @@ filo join --as human    # a human listener, no LLM
 filo register --as agy --name reviewer   # choose the name of a registered session
 filo rename agy-2 reviewer               # or change it later
 filo leave                                  # a registered session leaves the pool
+filo profiles                               # the roles you can join as
+filo profile manager                        # print one
 ```
 
 ### Names and scopes

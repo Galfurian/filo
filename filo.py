@@ -718,6 +718,56 @@ def rename(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- profiles ----------------------------------------------------------------
+
+def profile_dirs() -> list[tuple[str, Path]]:
+    """Where profiles are read from, the user's own first so that they win."""
+    mine = Path(os.environ.get("FILO_PROFILES", "~/.config/filo/profiles")).expanduser()
+    return [("yours", mine), ("built in", Path(__file__).resolve().parent / "skills" / "filo" / "profiles")]
+
+
+def find_profiles() -> dict[str, tuple[str, Path]]:
+    """Every profile by name, with where it comes from; a user's profile hides a built-in one."""
+    found: dict[str, tuple[str, Path]] = {}
+    for source, directory in reversed(profile_dirs()):
+        for path in sorted(directory.glob("*.md")):
+            if all(char in NAME_ALPHABET for char in path.stem):
+                found[path.stem] = (source, path)
+    return found
+
+
+def profile_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise UserError(f"profile: cannot read {path}: {exc}") from exc
+
+
+def profile_command(args: argparse.Namespace) -> int:
+    """Print a profile: the instructions an agent follows when it joins with that name."""
+    name = valid_name(args.profile, "profile")
+    found = find_profiles()
+    if name not in found:
+        known = ", ".join(sorted(found)) or "none"
+        raise UserError(f"profile: there is no profile named {name!r}; known: {known}")
+    print(profile_text(found[name][1]).rstrip("\n"))
+    return 0
+
+
+def profiles_command(_args: argparse.Namespace) -> int:
+    """List the profiles, one per line, with the first line of each."""
+    found = find_profiles()
+    if not found:
+        print("no profiles")
+        return 0
+    width = max(len(name) for name in found)
+    for name in sorted(found):
+        source, path = found[name]
+        lines = profile_text(path).strip().splitlines()
+        print(f"{name:<{width}}  [{source}]  {lines[0] if lines else ''}")
+    return 0
+
+
 def forget_registration(scope: str, row: Registration) -> None:
     """Remove a registration and the record that its name was ever seen."""
     unlink_if_present(row.path)
@@ -959,6 +1009,8 @@ def command_parser() -> argparse.ArgumentParser:
             "  filo register --as agy --name reviewer   pick your own name\n"
             "  filo rename agy-2 reviewer\n"
             "  filo leave                           take this registered session out of the pool\n"
+            "  filo profiles                        the roles you can join as: /filo manager\n"
+            "  filo profile manager                 print what a manager is told to do\n"
             "  filo who\n"
             "  filo send --to claude --from codex --message 'review this'\n"
             "  filo send --to codex --from claude --stdin < message.txt\n"
@@ -985,6 +1037,11 @@ def command_parser() -> argparse.ArgumentParser:
     register_parser.add_argument("--name", dest="chosen",
                                  help="the name others use for this session; defaults to the client name")
     register_parser.add_argument("--json", action="store_true", help="emit machine-readable output")
+
+    profile_parser = sub.add_parser("profile", help="print a profile: the instructions for a role")
+    profile_parser.add_argument("profile", help="its name, for example manager")
+
+    sub.add_parser("profiles", help="list the profiles you can join with")
 
     leave_parser = sub.add_parser("leave", help="take a registered session out of the pool")
     scope_argument(leave_parser)
@@ -1060,6 +1117,10 @@ def main(argv: list[str] | None = None) -> int:
             return join(args)
         if args.command == "register":
             return register(args)
+        if args.command == "profile":
+            return profile_command(args)
+        if args.command == "profiles":
+            return profiles_command(args)
         if args.command == "leave":
             return leave(args)
         if args.command == "rename":

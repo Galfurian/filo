@@ -800,6 +800,52 @@ class AdapterConfigTests(RuntimeCase):
 SHELL = shutil.which("sh") or "/bin/sh"
 
 
+class ProfileTests(RuntimeCase):
+    """A profile is a markdown file of instructions; yours win over the built-in ones."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.mine = self.root / "profiles"
+        self.environment["FILO_PROFILES"] = str(self.mine)
+
+    def test_the_built_in_profiles_are_listed_and_printed(self) -> None:
+        listed = self.msg("profiles")
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        for name in ("manager", "worker", "researcher", "librarian"):
+            self.assertRegex(listed.stdout, rf"(?m)^{name}\s+\[built in\]\s+\S")
+        printed = self.msg("profile", "manager")
+        self.assertEqual(printed.returncode, 0, printed.stderr)
+        self.assertIn("filo send", printed.stdout)
+
+    def test_every_built_in_profile_starts_with_a_one_line_summary(self) -> None:
+        for path in sorted((ROOT / "skills" / "filo" / "profiles").glob("*.md")):
+            text = path.read_text(encoding="utf-8")
+            first, _, rest = text.partition("\n")
+            self.assertTrue(first.strip() and len(first) <= 120, path.name)
+            self.assertTrue(rest.strip(), path.name)
+            self.assertNotIn("llm", text.lower(), path.name)
+
+    def test_your_profiles_add_to_the_list_and_hide_a_built_in_one_of_the_same_name(self) -> None:
+        self.mine.mkdir()
+        (self.mine / "dba.md").write_text("Looks after the database.\n\nOnly touch tables you were given.\n", encoding="utf-8")
+        (self.mine / "worker.md").write_text("A stricter worker.\n\nAsk before every step.\n", encoding="utf-8")
+        (self.mine / "not a name.md").write_text("ignored\n", encoding="utf-8")
+        listed = self.msg("profiles").stdout
+        self.assertRegex(listed, r"(?m)^dba\s+\[yours\]\s+Looks after the database\.")
+        self.assertRegex(listed, r"(?m)^worker\s+\[yours\]\s+A stricter worker\.")
+        self.assertNotIn("not a name", listed)
+        self.assertIn("Ask before every step.", self.msg("profile", "worker").stdout)
+        self.assertIn("Only touch tables", self.msg("profile", "dba").stdout)
+
+    def test_an_unknown_or_unsafe_profile_is_refused_with_the_known_names(self) -> None:
+        unknown = self.msg("profile", "nobody")
+        self.assertEqual(unknown.returncode, 1)
+        self.assertIn("known:", unknown.stderr)
+        self.assertIn("manager", unknown.stderr)
+        self.assertEqual(self.msg("profile", "../manager").returncode, 1)
+        self.assertEqual(self.msg("profile", "a/b").returncode, 1)
+
+
 class InstallerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.base = tempfile.TemporaryDirectory()
