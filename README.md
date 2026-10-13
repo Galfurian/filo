@@ -272,7 +272,8 @@ to report a problem are in [SECURITY.md](SECURITY.md).
 ## Development
 
 Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md) for what filo is meant to
-stay, how a change is made, and how to add a client or a profile.
+stay, how a change is made, and how to add a client or a profile. Everyone taking part is
+expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ```sh
 python3 -m unittest discover -s tests -v   # tests

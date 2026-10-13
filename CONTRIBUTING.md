@@ -1,7 +1,7 @@
 # Contributing
 
 Thanks for looking. filo is small on purpose, so a few things are worth knowing before you
-change it.
+change it. Taking part means following the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## What filo is meant to stay
 
