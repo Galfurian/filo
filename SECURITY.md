@@ -52,6 +52,20 @@ checkout, so what runs is what is in the checkout.
 copies nothing, changes no permissions and never overwrites a file it did not create.
 `uninstall.sh` removes only the links that point into the checkout.
 
+## Checking a release
+
+A release has the archive, `filo-X.tar.gz.sigstore.json` (a Sigstore signature, made without
+a key by the release workflow) and `filo-X.intoto.jsonl` (the build provenance, which says
+the archive was built from that tag by `.github/workflows/release.yml`). To check them:
+
+```sh
+sha256sum -c SHA256SUMS
+cosign verify-blob filo-X.tar.gz --bundle filo-X.tar.gz.sigstore.json \
+  --certificate-identity https://github.com/Galfurian/filo/.github/workflows/release.yml@refs/tags/vX \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify filo-X.tar.gz --repo Galfurian/filo --bundle filo-X.intoto.jsonl
+```
+
 ## What counts as a vulnerability
 
 In scope, for example: a way for **another user** to read, send or interfere with a
