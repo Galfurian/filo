@@ -728,6 +728,12 @@ class Adapter:
     alive: Callable[[dict[str, str]], bool] | None = None
 
 
+def captured_env(adapter: Adapter, env: dict[str, str]) -> dict[str, str]:
+    """The part of a registration's ``env`` that the adapter asked ``register`` to capture: nothing else
+    in the file is given to a command, whatever the file says."""
+    return {key: value for key, value in env.items() if key in adapter.capture_env}
+
+
 def run_delivery(argv: list[str], label: str, env: dict[str, str] | None = None) -> None:
     try:
         result = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=False,
@@ -926,7 +932,7 @@ def live_registrations(scope: str) -> list[Registration]:
         adapter = known.get(client)
         if adapter is not None and adapter.alive is not None:
             for row in group:
-                if adapter.alive(row.env):
+                if adapter.alive(captured_env(adapter, row.env)):
                     kept.append(row)
                 else:
                     unlink_if_present(row.path)
@@ -1121,7 +1127,7 @@ def adapter_target(scope: str, recipient: str) -> tuple[Adapter, str, dict[str, 
         if row.name == recipient:
             known = adapters()    # only a registered client needs its adapter, so only it needs the file
             if row.client in known:
-                return known[row.client], row.session, row.env
+                return known[row.client], row.session, captured_env(known[row.client], row.env)
     return None
 
 
