@@ -52,19 +52,40 @@ checkout, so what runs is what is in the checkout.
 copies nothing, changes no permissions and never overwrites a file it did not create.
 `uninstall.sh` removes only the links that point into the checkout.
 
+**The one-line install.** `curl … | sh` runs a script from the network, so read this before
+you use it. `get.sh` is attached to each release and the release workflow writes into it the
+version and the SHA-256 of that release's archive; it downloads only that archive, over
+https, and stops when the hash differs. A copy that was not stamped refuses to run. It
+unpacks into `~/.local/share/filo` (or `FILO_HOME`), and deletes that directory on
+uninstall only when it holds the marker file `.filo-release` that `get.sh` wrote; it refuses
+`/`, your home directory, a relative path and a link. The script is defined whole and run
+on its last line, so a download cut short does not run half of it. What this does not give
+you: the hash and the archive come from the same release, so someone who can change a
+release can change both. That is what the signature and the provenance below are for;
+check `get.sh` with them first if that matters to you.
+
 ## Checking a release
 
 A release has the archive, `filo-X.tar.gz.sigstore.json` (a Sigstore signature, made without
 a key by the release workflow) and `filo-X.intoto.jsonl` (the build provenance, which says
-the archive was built from that tag by `.github/workflows/release.yml`). To check them:
+the archive was built from that tag by `.github/workflows/release.yml`). It also has
+`get.sh`, with its own signature `get.sh.sigstore.json`; the provenance covers both files.
+To check them:
 
 ```sh
 sha256sum -c SHA256SUMS
 cosign verify-blob filo-X.tar.gz --bundle filo-X.tar.gz.sigstore.json \
   --certificate-identity https://github.com/Galfurian/filo/.github/workflows/release.yml@refs/tags/vX \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify-blob get.sh --bundle get.sh.sigstore.json \
+  --certificate-identity https://github.com/Galfurian/filo/.github/workflows/release.yml@refs/tags/vX \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
 gh attestation verify filo-X.tar.gz --repo Galfurian/filo --bundle filo-X.intoto.jsonl
+gh attestation verify get.sh --repo Galfurian/filo --bundle filo-X.intoto.jsonl
 ```
+
+The `get.sh` you checked contains the hash of the archive it installs, so checking it is
+enough to trust what it then downloads.
 
 ## What counts as a vulnerability
 
