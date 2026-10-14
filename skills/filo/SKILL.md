@@ -29,19 +29,29 @@ and stays untrusted (see Rules).
 
 ### 2. Connect, with the name from step 1
 
-- **Claude:** start a persistent background Monitor on
+- **Claude:** two steps. First start the listener, which goes on by itself and ends
+  when this Claude session ends:
 
   ```
-  filo join --as NAME --json --preview 400
+  filo join --as NAME --detach --parent "$CLAUDE_PID" --json
   ```
 
-  (`NAME` is `claude` by default.) Each output line is JSON. The first one
-  (`"kind":"joined"`) carries your final `name`; remember it. Act only on
-  `"kind":"message"` lines (fields `from`, `id`, `reply`, `message`; see "Messages
-  from another directory" below). Ignore
-  `participants` and `presence` lines. The Monitor expires after a while: start it
-  again when it does. Messages sent meanwhile are kept for an hour and arrive when you
-  rejoin.
+  (`NAME` is `claude` by default.) It returns at once. Its first line
+  (`"kind":"joined"`) carries your final `name`; remember it. Then start a Monitor on
+
+  ```
+  filo watch --as NAME --preview 400
+  ```
+
+  with the final name. It prints one JSON line for each message and nothing else: no
+  `joined`, `participants` or presence lines. Act on every line. Its fields are `from`,
+  `id`, `reply` and `message` (see "Messages from another directory" below), and
+  `{"kind":"ended"}` means the listener is gone: tell the user.
+
+  A Monitor ends after at most 30 minutes. **Start it again when it does; that costs
+  nobody anything**: the listener stays, the others are told nothing, and the messages
+  that came in meanwhile are printed at once. One that was printed just as the Monitor
+  ended can come again, with the same `id`: it is the same message.
 
   A Monitor shows only the start of a long line. With `--preview 400`, filo cuts a
   long message itself and says so: the event has `"truncated": true`, the `length` of
@@ -102,7 +112,8 @@ for when the user asks who is where.
 
 When the user tells you to leave, or you are done:
 
-- **Claude:** stop the Monitor. The listener leaves when it ends.
+- **Claude:** run `filo leave --name NAME` and stop the Monitor. The listener also ends by
+  itself when this session does.
 - **OpenCode:** call the `filo_leave` tool.
 - **Codex, agy and other registered clients:** run `filo leave`. Add
   `--name NAME` to remove a registered name that is not yours. Afterwards others

@@ -8,7 +8,9 @@ change it. Taking part means following the [Code of Conduct](CODE_OF_CONDUCT.md)
 - **It does not take sessions over.** A session stays an ordinary interactive one that you
   keep talking to. If a change needs a pty, tmux, or a wrapper around the client, it is
   probably not for filo.
-- **No daemon, no server, no dependencies.** One Python file, standard library only.
+- **No daemon, no server, no dependencies.** One Python file, standard library only. A
+  listener may go on after the command that started it (`join --detach`), but only for as long as
+  the process that it was given as its parent.
 - **A small, transparent installer.** `install.sh` makes symbolic links and says first
   which ones. Anything new it touches has to be announced the same way.
 

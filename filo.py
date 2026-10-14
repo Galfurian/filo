@@ -19,6 +19,7 @@ import json
 import os
 import re
 import secrets
+import select
 import shlex
 import signal
 import socket
@@ -500,16 +501,23 @@ def preview_event(event: JsonObject, limit: int) -> JsonObject:
     return cut(low)
 
 
-def keep_received(scope: str, name: str, message: JsonObject) -> None:
-    """Keep what ``name`` received, so that `filo show` can print it whole. Best effort."""
+def keep_received(scope: str, name: str, message: JsonObject, peer_pid: int | None = None) -> None:
+    """Keep what ``name`` received, so that `filo show` can print it whole and `filo watch` can
+    report it. Best effort."""
     message_id = message.get("id")
     if not isinstance(message_id, str) or not MESSAGE_ID.fullmatch(message_id):
         return
+    record: JsonObject = {
+        "id": message_id, "from": message.get("from", "anonymous"), "to": name,
+        "message": message.get("message", ""), "created_ns": message.get("created_ns"),
+        "received_ns": time.time_ns(),
+    }
+    if isinstance(message.get("origin"), str):
+        record["origin"] = message["origin"]
+    if peer_pid is not None:
+        record["peer_pid"] = peer_pid
     try:
-        write_metadata(scope_directory(scope) / "inbox" / valid_name(name) / f"{message_id}.json", {
-            "id": message_id, "from": message.get("from", "anonymous"), "to": name,
-            "message": message.get("message", ""), "created_ns": message.get("created_ns"),
-        })
+        write_metadata(scope_directory(scope) / "inbox" / valid_name(name) / f"{message_id}.json", record)
     except OSError:
         pass
 
@@ -1002,16 +1010,21 @@ def forget_registration(scope: str, row: Registration) -> None:
 
 
 def leave(args: argparse.Namespace) -> int:
-    """Take a registered session out of the pool. A listener leaves by stopping."""
+    """Take a registered session or a listener out of the pool."""
     scope = canonical_scope(args.scope)
     rows = read_registrations(scope)
     if args.chosen:
         name = valid_name(args.chosen, "--name")
         found = [row for row in rows if row.name == name]
         if not found:
-            raise UserError(f"leave: {name!r} is not a registered session here"
-                            + ("; a listener leaves by stopping 'filo join' (stop its Monitor)"
-                               if metadata_path(scope, name).exists() else "; see 'filo who'"))
+            try:
+                reply = request(socket_path(scope, name), {"op": "quit"})
+            except (OSError, ValueError):
+                reply = {}
+            if reply.get("ok"):
+                print(f"{name} is leaving")
+                return 0
+            raise UserError(f"leave: {name!r} is not a registered session or a listener here; see 'filo who'")
     else:
         mine = {(adapter.client, os.environ[adapter.id_env]) for adapter in adapters().values()
                 if adapter.id_env and os.environ.get(adapter.id_env)}
@@ -1118,7 +1131,9 @@ class Listener:
     """A participant that receives messages on its Unix socket and prints them."""
 
     def __init__(self, scope: str, name: str, server: socket.socket, as_json: bool,
-                 parent: int | None = None, preview: int | None = None) -> None:
+                 parent: int | None = None, preview: int | None = None, detached: bool = False) -> None:
+        self.detached = detached     # nobody reads its output: `filo watch` reads what it received
+        self.stopping = False
         self.preview = preview
         self.next_prune = 0.0
         self.scope = scope
@@ -1135,10 +1150,12 @@ class Listener:
         os.chmod(self.socket_file, 0o600)
         self.server.listen(32)
         self.server.settimeout(0.5)
-        write_metadata(self.metadata, {"name": self.name, "pid": os.getpid()})
+        write_metadata(self.metadata, {"name": self.name, "pid": os.getpid(), "started_ns": time.time_ns()})
         mark_known(self.scope, self.name, "listener")
         remember_scope(self.scope)
         notify(self.scope, self.name, "joined")
+        if self.detached:
+            return
         if self.as_json:
             print(json.dumps({"kind": "joined", "scope": shown_scope, "name": self.name,
                               "pid": os.getpid()}), flush=True)
@@ -1151,7 +1168,7 @@ class Listener:
 
     def serve(self) -> None:
         """Deliver spooled messages and answer connections until the parent, if any, is gone."""
-        while self.parent is None or pid_alive(self.parent):
+        while not self.stopping and (self.parent is None or pid_alive(self.parent)):
             drain_spool(self.scope, self.name, self.print_spooled)
             if time.monotonic() >= self.next_prune:
                 prune_inbox(self.scope)
@@ -1167,11 +1184,12 @@ class Listener:
         self.receive(message, None)
 
     def receive(self, message: JsonObject, peer_pid: int | None) -> None:
-        keep_received(self.scope, self.name, message)
+        keep_received(self.scope, self.name, message, peer_pid)
         self.emit(message_event(self.name, message, peer_pid, self.preview, self.scope))
 
     def emit(self, payload: JsonObject) -> None:
-        emit_event(payload, self.as_json)
+        if not self.detached:
+            emit_event(payload, self.as_json)
 
     def handle(self, connection: socket.socket) -> None:
         connection.settimeout(SERVER_TIMEOUT)
@@ -1196,6 +1214,9 @@ class Listener:
             if message.get("id"):
                 write_ack(self.scope, str(message["id"]), self.name, "delivered directly")
             return {"ok": True}
+        if operation == "quit":
+            self.stopping = True
+            return {"ok": True}
         if operation == "presence":
             self.emit({"kind": "presence", "event": str(message.get("event", "changed")),
                        "name": str(message.get("name", "anonymous")), "to": self.name})
@@ -1214,13 +1235,70 @@ class Listener:
         unlink_if_present(self.metadata)
 
 
+def detach(listener: Listener, shown_scope: str, existing: list[Participant],
+           registered: list[Registration], as_json: bool) -> int:
+    """Let the listener go on in a process of its own, which ends with its parent, and say who it is.
+
+    The name and the socket are claimed first, so a failure is reported here. The new process
+    publishes the listener and tells this one, which prints what `join` would have printed."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    ready_read, ready_write = os.pipe()
+    child = os.fork()
+    if child == 0:
+        status = 1
+        try:
+            os.setsid()
+            null = os.open(os.devnull, os.O_RDWR)
+            for descriptor in (0, 1, 2):
+                os.dup2(null, descriptor)
+            keep = {listener.server.fileno(), ready_write}
+            for descriptor in range(3, 256):
+                if descriptor not in keep:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+            listener.open(shown_scope, existing, registered)
+            os.write(ready_write, b"1")
+            os.close(ready_write)
+            listener.serve()
+            status = 0
+        finally:
+            listener.close()
+            os._exit(status)
+    os.close(ready_write)
+    listener.server.close()
+    listener.closed = True    # the files belong to the new process now: this one must never remove them
+    with os.fdopen(ready_read, "rb") as pipe:
+        ready, _, _ = select.select([pipe], [], [], 10)
+        started = bool(ready) and pipe.read(1) == b"1"
+    if not started:
+        raise UserError("join: the listener did not start")
+    if as_json:
+        print(json.dumps({"kind": "joined", "scope": shown_scope, "name": listener.name, "pid": child,
+                          "detached": True}), flush=True)
+        print(json.dumps({"kind": "participants", "participants": [asdict(row) for row in existing],
+                          "registered": registered_rows(registered)}), flush=True)
+    else:
+        print(f"joined {shown_scope} as {listener.name} (pid={child}); it leaves when process "
+              f"{listener.parent} ends, or with `filo leave --name {listener.name}`", flush=True)
+        print_rows(existing, "already connected:", registered)
+    return 0
+
+
 def join(args: argparse.Namespace) -> int:
     if args.preview is not None and args.preview < MIN_PREVIEW:
         raise UserError(f"join: --preview must be at least {MIN_PREVIEW}")
+    if args.detach:
+        if args.parent is None:
+            raise UserError("join: --detach needs --parent PID, the process whose end ends the listener")
+        if not pid_alive(args.parent):
+            raise UserError(f"join: process {args.parent} is not running")
     scope = canonical_scope(args.scope)
     existing = participant_rows(scope)
     name, server = claim_listener_name(scope, valid_name(args.name, "--as"), args.exact)
-    listener = Listener(scope, name, server, args.json, args.parent, args.preview)
+    listener = Listener(scope, name, server, args.json, args.parent, args.preview, args.detach)
 
     def stop(_signum: int, _frame: object) -> None:
         listener.close()
@@ -1228,7 +1306,10 @@ def join(args: argparse.Namespace) -> int:
 
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
-    listener.open(args.scope or str(Path.cwd()), existing, live_registrations(scope))
+    registered = live_registrations(scope)
+    if args.detach:
+        return detach(listener, args.scope or str(Path.cwd()), existing, registered, args.json)
+    listener.open(args.scope or str(Path.cwd()), existing, registered)
     try:
         listener.serve()
     finally:
@@ -1371,6 +1452,8 @@ def command_parser() -> argparse.ArgumentParser:
             "  filo register --as codex          announce this Codex session\n"
             "  filo register --as agy --name reviewer   pick your own name\n"
             "  filo rename agy-2 reviewer\n"
+            "  filo join --as claude --detach --parent $CLAUDE_PID    a listener that ends with its parent\n"
+            "  filo watch --as claude            its messages, until it ends; start it again at any time\n"
             "  filo leave                           take this registered session out of the pool\n"
             "  filo profiles                        the roles you can join as: /filo manager\n"
             "  filo profile manager                 print what a manager is told to do\n"
@@ -1399,6 +1482,9 @@ def command_parser() -> argparse.ArgumentParser:
     join_parser.add_argument("--preview", type=int, metavar="N",
                              help=f"with --json: cut an event longer than N characters (at least {MIN_PREVIEW}) "
                                   "and say so; `filo show ID` prints the whole message")
+    join_parser.add_argument("--detach", action="store_true",
+                             help="go on in a process of its own and return: for a session whose output is not "
+                                  "its listener (needs --parent; read the messages with `filo watch`)")
 
     register_parser = sub.add_parser(
         "register", help="announce a client that has no listener (codex, agy, or one from the adapters file)")
@@ -1443,6 +1529,15 @@ def command_parser() -> argparse.ArgumentParser:
     source.add_argument("--message", help="message text")
     source.add_argument("--stdin", action="store_true", help="read the entire message from standard input")
     send_parser.add_argument("text", nargs="?", help="message text, as an alternative to --message")
+
+    watch_parser = sub.add_parser(
+        "watch", help="print the messages that a detached listener receives, as JSON lines, until it ends")
+    scope_argument(watch_parser)
+    watch_parser.add_argument("--as", dest="name", required=True, help="the name of the detached listener")
+    watch_parser.add_argument("--json", action="store_true",
+                              help="accepted for symmetry with join: watch always prints JSON lines")
+    watch_parser.add_argument("--preview", type=int, metavar="N",
+                              help=f"cut an event longer than N characters (at least {MIN_PREVIEW}) and say so")
 
     show_parser = sub.add_parser("show", help="print the whole body of a message this scope received")
     scope_argument(show_parser)
@@ -1491,6 +1586,52 @@ def who_command(args: argparse.Namespace, scope: str | None) -> int:
     print_rows(participants, f"connected to {args.scope or Path.cwd()}:", registered)
     update_notice()
     return 0
+
+
+def watch_command(args: argparse.Namespace, scope: str) -> int:
+    """Print, one JSON line each, the messages that a detached listener receives, and the end of the
+    listener. It reads what the listener keeps, so it can be stopped and started again at any time:
+    nothing changes for the listener and the others, and what came in between is printed at once."""
+    name = valid_name(args.name, "--as")
+    if args.preview is not None and args.preview < MIN_PREVIEW:
+        raise UserError(f"watch: --preview must be at least {MIN_PREVIEW}")
+    try:
+        info = read_object(metadata_path(scope, name))
+        pid, started = int_field(info, "pid"), int_field(info, "started_ns", 0)
+    except (OSError, ValueError, TypeError, KeyError):
+        raise UserError(f"watch: nobody called {name!r} is listening here; "
+                        f"start it with `filo join --as {name} --detach --parent PID`") from None
+    inbox = scope_directory(scope) / "inbox" / name
+    cursor = inbox / ".cursor"
+    last = ""
+    try:
+        saved = read_object(cursor)
+        if saved.get("pid") == pid:
+            last = str(saved.get("last", ""))
+    except (OSError, ValueError, TypeError):
+        pass
+    next_check = 0.0
+    while True:
+        for path in sorted(inbox.glob("*.json")):
+            if path.stem <= last:
+                continue
+            try:
+                record = read_object(path)
+            except (OSError, ValueError):
+                continue
+            if int_field(record, "received_ns", 0) < started:
+                continue    # for a listener that was here before
+            peer = record.get("peer_pid")
+            print(json.dumps(message_event(name, record, peer if isinstance(peer, int) else None,
+                                           args.preview, scope), ensure_ascii=False), flush=True)
+            last = path.stem
+            write_metadata(cursor, {"pid": pid, "last": last})
+        if time.monotonic() >= next_check:
+            if not listener_present(scope, name, pid):
+                print(json.dumps({"kind": "ended", "name": name, "reason": "the listener is gone"}), flush=True)
+                return 0
+            next_check = time.monotonic() + 2
+        time.sleep(0.25)
 
 
 def show_command(args: argparse.Namespace, scope: str) -> int:
@@ -1556,6 +1697,8 @@ def main(argv: list[str] | None = None) -> int:
         scope = canonical_scope(args.scope)
         if args.command == "show":
             return show_command(args, scope)
+        if args.command == "watch":
+            return watch_command(args, scope)
         if args.command == "status":
             print(message_status(scope, args.id))
             return 0
