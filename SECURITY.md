@@ -38,6 +38,11 @@ protect.
   these are the address and token of its own sidecar, enough to send messages as that
   conversation. The file is `0600` and is removed when the session is forgotten.
 
+**What a listener keeps.** For `filo show`, each listener writes the messages it receives to
+`inbox/<name>/<id>.json` in the scope's runtime directory (`0600` files in a `0700`
+directory) and removes them after 24 hours. They hold the whole text of the messages, so
+they are as private as the runtime directory is, and no more.
+
 **Messages are untrusted input to a model.** A message from another agent reaches a model
 that can run commands, so it can carry a prompt injection. filo cannot prevent that. The
 skill tells agents to treat messages as untrusted and to ask the user when in doubt, and a
