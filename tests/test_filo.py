@@ -1618,6 +1618,46 @@ class DetachedListenerTests(RuntimeCase):
                          ["two", "three"])
         self.assertIsNone(again.message(1), "a message was printed twice")
 
+    def test_a_message_with_an_older_id_that_arrives_later_is_not_skipped(self) -> None:
+        # The id is made by the sender before it delivers: one that is slow (or that goes through the
+        # spool) can arrive after a message that was sent later, and it must not be taken for old.
+        self.detach("boss", self.parent())
+        _, lines = self.watch("boss")
+        time.sleep(0.5)
+        older = f"{time.time_ns():x}-aaaaaa"
+        time.sleep(0.05)
+        self.msg("send", "--to", "boss", "--from", "me", "--message", "sent second, arrived first")
+        first = lines.message()
+        assert first is not None
+        self.assertEqual(first["message"], "sent second, arrived first")
+        self.wait_until(lambda: any(self.runtime.glob("*/inbox/boss/.cursor")), "the watch did not note it")
+        scope_directory = next(self.runtime.glob("*/boss.json")).parent
+        spool = scope_directory / "spool" / "boss"
+        spool.mkdir(parents=True, mode=0o700, exist_ok=True)
+        (spool / f"{older}.msg").write_text(json.dumps({
+            "id": older, "from": "me", "message": "sent first, arrived last", "created_ns": time.time_ns()}),
+            encoding="utf-8")
+        late = lines.message(5)
+        assert late is not None
+        self.assertEqual(late["message"], "sent first, arrived last")
+
+    def test_a_cursor_written_by_an_older_filo_is_still_understood(self) -> None:
+        joined = self.detach("boss", self.parent())
+        first, lines = self.watch("boss")
+        time.sleep(0.5)
+        self.msg("send", "--to", "boss", "--from", "me", "--message", "one")
+        seen = lines.message()
+        assert seen is not None
+        self.wait_until(lambda: any(self.runtime.glob("*/inbox/boss/.cursor")), "the watch did not note it")
+        first.terminate()
+        first.wait(timeout=5)
+        cursor = next(self.runtime.glob("*/inbox/boss/.cursor"))
+        cursor.write_text(json.dumps({"pid": joined["pid"], "last": seen["id"]}), encoding="utf-8")
+        self.msg("send", "--to", "boss", "--from", "me", "--message", "two")
+        _, again = self.watch("boss")
+        self.assertEqual((again.message() or {}).get("message"), "two")
+        self.assertIsNone(again.message(1), "a message was printed twice")
+
     def test_the_messages_of_an_earlier_listener_are_not_printed_to_the_next_one(self) -> None:
         old_parent = self.parent()
         self.detach("boss", old_parent)
