@@ -355,6 +355,8 @@ def int_field(data: JsonObject, key: str, default: int | None = None) -> int:
 
 
 def pid_alive(pid: int) -> bool:
+    if pid <= 0:    # kill() takes these for a group of processes, and finds one
+        return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -1357,6 +1359,8 @@ def detach(listener: Listener, shown_scope: str, existing: list[Participant],
 def join(args: argparse.Namespace) -> int:
     if args.preview is not None and args.preview < MIN_PREVIEW:
         raise UserError(f"join: --preview must be at least {MIN_PREVIEW}")
+    if args.parent is not None and args.parent <= 0:
+        raise UserError("join: --parent must be the id of a process, above 0")
     if args.detach:
         if args.parent is None:
             raise UserError("join: --detach needs --parent PID, the process whose end ends the listener")

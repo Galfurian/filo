@@ -1734,6 +1734,15 @@ class DetachedListenerTests(RuntimeCase):
         process.wait(timeout=5)
         self.assertEqual(process.returncode, 0)
 
+    def test_a_parent_that_is_not_a_process_is_refused(self) -> None:
+        # kill(0, 0) and kill(-1, 0) succeed, so such a "parent" would never end and the listener with it
+        for parent in ("0", "-1"):
+            for extra in ((), ("--detach",)):
+                refused = self.msg("join", "--as", "boss", "--parent", parent, *extra)
+                self.assertEqual(refused.returncode, 1, (parent, extra, refused.stderr))
+                self.assertIn("--parent", refused.stderr)
+        self.assertEqual(self.listening(), [])
+
     def test_leave_stops_a_detached_listener(self) -> None:
         self.detach("boss", self.parent())
         left = self.msg("leave", "--name", "boss")
