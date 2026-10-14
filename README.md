@@ -140,15 +140,17 @@ session by its exact name from `filo who`, and use your own exact name in
 and its registered sessions. A scope shows up once a session has joined or registered
 with filo 0.3 or later.
 
-**Messages from another directory.** Writing to another scope needs `--scope`, and the
-message says where it was sent from. A `message` event has the `scope` of the listener,
-the `origin` (the directory the sender ran in) and, when that is another directory,
-`"foreign": true`; its `reply` command then carries `--scope` with that directory, since
-that is where the sender listens. A message for a Codex, agy or OpenCode session says
-"sent from DIRECTORY (another scope)". The skill tells an agent to pass such a message on to
-the user and wait. `origin` is what the sender's process reports, not proof: any process
-of yours can say anything, as `--from` can. Its use is to let an agent notice that a
-message did not come from its own directory.
+**Messages from another scope.** Writing to another scope needs `--scope`. A message says which scope
+its sender belongs to: the scope of the directory it runs in, if it is a member of it (listening or
+registered); else the scope it writes to, if it is a member there; else the one other scope where
+that name is a member; else the directory it runs in. So an agent that registered in a project and then
+moved to a worktree is still in the project. A `message` event from another scope has `"foreign": true`
+and `origin`, the sender's scope, and its `reply` command carries `--scope` with it, since that is where
+the sender listens; a message from the listener's own scope has neither field. A message for a Codex, agy
+or OpenCode session says "sent from SCOPE (another scope)". The skill tells an agent to tell the user about
+such a message. What the message says about where it comes from is what the sender's process reports,
+not proof: any process of yours can say anything, as `--from` can. It lets an agent notice that a message
+did not come from its own scope.
 
 ## Install and uninstall
 

@@ -208,6 +208,23 @@ class NameAndScopeTests(unittest.TestCase):
             self.assertFalse(filo.is_foreign("keyword:team", origin))
 
 
+class SentFromTests(unittest.TestCase):
+    @given(json_objects)
+    @example({"home": "path:" + "x" * 5000})
+    @example({"home": 7})
+    @example({"origin": "a\x00b"})
+    def test_whether_a_message_comes_from_outside_is_a_yes_or_no_for_any_message(self, message: dict[str, Any]) -> None:
+        outside, where = filo.sent_from("path:/some/scope", message)
+        self.assertIsInstance(outside, bool)
+        self.assertTrue(where is None or isinstance(where, str))
+        if "home" in message and message["home"] != "path:/some/scope":
+            self.assertTrue(outside)       # a home that is not this scope is never taken for it
+
+    @given(texts, texts)
+    def test_a_home_that_is_this_scope_is_inside(self, name: str, body: str) -> None:
+        self.assertEqual(filo.sent_from("path:/a", {"home": "path:/a", "from": name, "message": body}), (False, "/a"))
+
+
 class TextForTheReaderTests(unittest.TestCase):
     @given(texts, texts, st.none() | texts)
     @example("a; rm -rf ~", "b", None)
