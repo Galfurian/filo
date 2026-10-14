@@ -757,6 +757,25 @@ class AdapterConfigTests(RuntimeCase):
         self.assertEqual(self.msg("send", "--to", "gemini", "--from", "claude", "hi").returncode, 0)
         self.assertEqual(json.loads(env_record.read_text(encoding="utf-8")), "s3cret")
 
+    def test_delivery_gets_only_the_variables_that_the_adapter_captures(self) -> None:
+        env_record = self.root / "env.json"
+        tool = self.root / "env-tool"
+        tool.write_text("#!/usr/bin/env python3\nimport json, os\n"
+                        f"open({str(env_record)!r}, 'w').write(json.dumps([os.environ.get('GEM_TOKEN'), "
+                        "os.environ.get('LD_PRELOAD')]))\n", encoding="utf-8")
+        tool.chmod(0o755)
+        self.config.write_text(json.dumps({"gemini": {
+            "id_env": "GEMINI_SESSION", "capture_env": ["GEM_TOKEN"], "deliver": [str(tool)],
+        }}), encoding="utf-8")
+        registered = self.msg("register", "--as", "gemini", env={"GEMINI_SESSION": "gem-123456", "GEM_TOKEN": "s3cret"})
+        self.assertEqual(registered.returncode, 0, registered.stderr)
+        (reg,) = self.runtime.glob("*/gemini.reg")
+        record = json.loads(reg.read_text(encoding="utf-8"))
+        record["env"]["LD_PRELOAD"] = "/tmp/not-yours.so"    # what anything that can write the file could add
+        reg.write_text(json.dumps(record), encoding="utf-8")
+        self.assertEqual(self.msg("send", "--to", "gemini", "--from", "claude", "hi").returncode, 0)
+        self.assertEqual(json.loads(env_record.read_text(encoding="utf-8")), ["s3cret", None])
+
     def test_agy_registers_its_sidecar_and_delivers_through_agentapi(self) -> None:
         tool = self.root / "agy-stub"
         tool.write_text("#!/usr/bin/env python3\nimport json, os, sys\n"
