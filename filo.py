@@ -899,7 +899,11 @@ def live_registrations(scope: str) -> list[Registration]:
     directory = scope_path(scope)
     if directory is None or sandboxed():
         return rows
-    known = adapters()
+    try:
+        known = adapters()
+    except UserError as exc:    # what a listing needs is not worth stopping for: say so, and prune nothing
+        print(exc, file=sys.stderr)
+        return sorted(rows, key=lambda row: row.name)
     kept: list[Registration] = []
     for client in sorted({row.client for row in rows}):
         group = sorted((row for row in rows if row.client == client),
@@ -1098,10 +1102,11 @@ def leave(args: argparse.Namespace) -> int:
 # --- sending -----------------------------------------------------------------
 
 def adapter_target(scope: str, recipient: str) -> tuple[Adapter, str, dict[str, str]] | None:
-    known = adapters()
     for row in live_registrations(scope):
-        if row.name == recipient and row.client in known:
-            return known[row.client], row.session, row.env
+        if row.name == recipient:
+            known = adapters()    # only a registered client needs its adapter, so only it needs the file
+            if row.client in known:
+                return known[row.client], row.session, row.env
     return None
 
 
@@ -1353,6 +1358,7 @@ def join(args: argparse.Namespace) -> int:
             raise UserError(f"join: process {args.parent} is not running")
     scope = canonical_scope(args.scope)
     existing = participant_rows(scope)
+    registered = live_registrations(scope)    # before the socket exists: nothing here may leave one behind
     name, server = claim_listener_name(scope, valid_name(args.name, "--as"), args.exact)
     listener = Listener(scope, name, server, args.json, args.parent, args.preview, args.detach)
 
@@ -1362,11 +1368,10 @@ def join(args: argparse.Namespace) -> int:
 
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
-    registered = live_registrations(scope)
     if args.detach:
         return detach(listener, args.scope or str(Path.cwd()), existing, registered, args.json)
-    listener.open(args.scope or str(Path.cwd()), existing, registered)
     try:
+        listener.open(args.scope or str(Path.cwd()), existing, registered)
         listener.serve()
     finally:
         listener.close()

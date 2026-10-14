@@ -841,6 +841,28 @@ class AdapterConfigTests(RuntimeCase):
         self.config.write_text(json.dumps({"gemini": {"deliver": "not-a-list"}}), encoding="utf-8")
         self.assertIn("non-empty list", self.msg("who").stderr)
 
+    def test_a_bad_adapters_file_is_reported_but_does_not_stop_who_or_join(self) -> None:
+        registered = self.msg("register", "--as", "gemini", env={"GEMINI_SESSION": "gem-123456"})
+        self.assertEqual(registered.returncode, 0, registered.stderr)
+        self.config.write_text("{not json", encoding="utf-8")
+        who = self.msg("who", "--json")
+        self.assertEqual(who.returncode, 0, who.stderr)
+        self.assertIn("adapters:", who.stderr)
+        self.assertEqual([row["name"] for row in json.loads(who.stdout)["registered"]], ["gemini"])
+        _, _, joined = self.listen("claude")
+        self.assertEqual(joined["name"], "claude")
+        self.assertEqual([row["name"] for row in json.loads(self.msg("who", "--json").stdout)["participants"]],
+                         ["claude"])
+
+    def test_a_bad_adapters_file_does_not_stop_a_message_to_a_listener_that_is_away(self) -> None:
+        process, _, _ = self.listen("claude")
+        process.terminate()
+        process.wait(timeout=5)
+        self.config.write_text("{not json", encoding="utf-8")
+        sent = self.msg("send", "--to", "claude", "--from", "me", "hello")
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        self.assertIn("queued", sent.stdout)
+
 
 SHELL = shutil.which("sh") or "/bin/sh"
 
