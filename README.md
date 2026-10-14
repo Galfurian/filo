@@ -191,6 +191,7 @@ travel with the skill link, so they need no install of their own.
 
 ```sh
 filo who
+filo who --all          # every scope that has someone in it, with who they are
 filo send --to claude --from codex --message 'text'
 filo send --to codex --from claude --stdin < review.md
 filo status ID          # delivered? pending? expired?
@@ -217,6 +218,20 @@ registered session; a listener changes its name by joining again. A registered
 session leaves with `filo leave`, and a listener by stopping. Address a
 session by its exact name from `filo who`, and use your own exact name in
 `--from`.
+
+`filo who --all` lists every scope that has someone in it: its directory, its listeners
+and its registered sessions. A scope shows up once a session has joined or registered
+with filo 0.3 or later.
+
+**Messages from another directory.** Writing to another scope needs `--scope`, and the
+message says where it was sent from. A `message` event has the `scope` of the listener,
+the `origin` (the directory the sender ran in) and, when that is another directory,
+`"foreign": true`; its `reply` command then carries `--scope` with that directory, since
+that is where the sender listens. A message for a Codex, agy or OpenCode session says
+"sent from DIRECTORY (another scope)". The skill tells an agent to pass such a message on to
+the user and wait. `origin` is what the sender's process reports, not proof: any process
+of yours can say anything, as `--from` can. Its use is to let an agent notice that a
+message did not come from its own directory.
 
 ### Delivery
 

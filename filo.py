@@ -19,6 +19,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import signal
 import socket
 import stat
@@ -29,7 +30,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -106,6 +107,26 @@ def scope_path(scope: str) -> str | None:
     return scope[len("path:"):] if scope.startswith("path:") else None
 
 
+def display_scope(scope: str) -> str:
+    """A scope as a person writes it: the directory, or the keyword."""
+    return scope_path(scope) or scope.split(":", 1)[-1]
+
+
+def current_origin() -> str | None:
+    """The directory this process runs in: where a message it sends comes from."""
+    try:
+        return str(Path.cwd())
+    except OSError:
+        return None
+
+
+def is_foreign(scope: str, origin: object) -> bool:
+    """Whether a message that says it was sent from ``origin`` comes from outside this directory scope."""
+    directory = scope_path(scope)
+    return isinstance(origin, str) and bool(origin) and directory is not None \
+        and os.path.realpath(origin) != directory
+
+
 def secure_directory(path: Path) -> Path:
     """Make ``path`` a directory that is private to this user, or refuse to use it.
 
@@ -145,6 +166,30 @@ def runtime_root() -> Path:
 def scope_directory(scope: str) -> Path:
     digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:16]
     return secure_directory(runtime_root() / digest)
+
+
+def remember_scope(scope: str) -> None:
+    """Write down which scope this directory is, so that `who --all` can say. Best effort."""
+    path = scope_directory(scope) / ".scope"
+    try:
+        if path.exists() and read_object(path).get("scope") == scope:
+            return
+        write_metadata(path, {"scope": scope})
+    except (OSError, ValueError):
+        pass
+
+
+def known_scopes() -> list[str]:
+    """The scopes whose directory says what it is, in the order of their names."""
+    found: list[str] = []
+    for directory in sorted(runtime_root().iterdir()):
+        try:
+            scope = str(read_object(directory / ".scope")["scope"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if directory.name == scope_directory(scope).name and scope not in found:
+            found.append(scope)
+    return sorted(found, key=display_scope)
 
 
 def socket_path(scope: str, name: str) -> Path:
@@ -349,38 +394,61 @@ def participant_rows(scope: str, exclude: str | None = None) -> list[Participant
     return rows
 
 
-def print_rows(rows: list[Participant], heading: str) -> None:
+def registered_rows(rows: list[Registration]) -> list[JsonObject]:
+    return [{"name": row.name, "client": row.client, "session": row.session} for row in rows]
+
+
+def print_rows(rows: list[Participant], heading: str, registered: Sequence[Registration] = ()) -> None:
     print(heading)
-    if not rows:
+    if not rows and not registered:
         print("  (none)")
         return
     for row in rows:
         print(f"  {row.name}  pid={row.pid}")
+    for entry in registered:
+        print(f"  {entry.name}  {entry.client} session={entry.session}  (registered)")
 
 
-def reply_hint(sender: str, me: str) -> str:
-    """Command a recipient can run to answer ``sender``."""
-    return f'filo send --to {sender} --from {me} --message "..."'
+def reply_hint(sender: str, me: str, origin: str | None = None) -> str:
+    """Command a recipient can run to answer ``sender``; ``origin`` is where it has to be sent when
+    the sender is in another directory."""
+    where = f" --scope {shlex.quote(origin)}" if origin else ""
+    return f'filo send --to {sender} --from {me}{where} --message "..."'
 
 
-def compose_text(sender: str, recipient: str, body: str) -> str:
-    """A message as an agent without a listener sees it: header, body, reply command."""
-    return f"[filo] Message from {sender}: {body}\n\nTo reply: {reply_hint(sender, recipient)}"
+def compose_text(sender: str, recipient: str, body: str, origin: str | None = None,
+                 scope: str | None = None) -> str:
+    """A message as an agent without a listener sees it: header, body, reply command. A message
+    from another directory says so, and its reply command names that directory."""
+    outside = origin if scope is not None and origin is not None and is_foreign(scope, origin) else None
+    where = f", sent from {origin} (another scope)" if outside else ""
+    return f"[filo] Message from {sender}{where}: {body}\n\nTo reply: {reply_hint(sender, recipient, outside)}"
 
 
 def message_event(name: str, message: JsonObject, peer_pid: int | None = None,
-                  preview: int | None = None) -> JsonObject:
+                  preview: int | None = None, scope: str | None = None) -> JsonObject:
     """The event a listener emits for one incoming message. The body comes last, so that a client
     that shows only the start of a line still shows who wrote, the id and how to reply.
+
+    ``scope`` is the scope of the listener. ``origin`` is the directory the sender says it ran in,
+    and ``foreign`` is true when that is not this scope: the message comes from outside it, and the
+    reply command then names that directory.
 
     With ``preview``, an event longer than that many characters carries only the start of the body
     and says so: ``truncated``, ``length`` (of the whole body) and ``show``, the command that prints it."""
     sender = str(message.get("from", "anonymous"))
-    event: JsonObject = {
-        "kind": "message", "id": message.get("id"), "from": sender, "to": name,
-        "reply": reply_hint(sender, name),
-        "created_ns": message.get("created_ns"),
-    }
+    raw_origin = message.get("origin")
+    origin = raw_origin if isinstance(raw_origin, str) and raw_origin else None
+    foreign = scope is not None and is_foreign(scope, origin)
+    event: JsonObject = {"kind": "message", "id": message.get("id"), "from": sender, "to": name}
+    if scope is not None:
+        event["scope"] = display_scope(scope)
+    if origin is not None:
+        event["origin"] = origin
+    if foreign:
+        event["foreign"] = True
+    event["reply"] = reply_hint(sender, name, origin if foreign else None)
+    event["created_ns"] = message.get("created_ns")
     if peer_pid is not None:
         event["peer_pid"] = peer_pid
     event["message"] = message.get("message", "")
@@ -488,9 +556,11 @@ def spool_message(scope: str, recipient: str, sender: str, body: str, message_id
     """Leave a message as a file for ``recipient``'s listener to deliver."""
     directory = scope_directory(scope) / "spool" / valid_name(recipient)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    write_metadata(directory / f"{message_id}.msg", {
-        "id": message_id, "from": sender, "message": body, "created_ns": time.time_ns(),
-    })
+    record: JsonObject = {"id": message_id, "from": sender, "message": body, "created_ns": time.time_ns()}
+    origin = current_origin()
+    if origin is not None:
+        record["origin"] = origin
+    write_metadata(directory / f"{message_id}.msg", record)
 
 
 def write_ack(scope: str, message_id: str, recipient: str, how: str) -> None:
@@ -825,6 +895,7 @@ def register(args: argparse.Namespace) -> int:
     else:
         name = claim_free_name(scope, client, registration)
     mark_known(scope, name, "registered")
+    remember_scope(scope)
     if args.json:
         print(json.dumps({"kind": "registered", "name": name, "client": client, "session": session}), flush=True)
     else:
@@ -947,7 +1018,8 @@ def deliver_offline(scope: str, recipient: str, sender: str, body: str, message_
     target = adapter_target(scope, recipient)
     if target is not None:
         adapter, session, env = target
-        where = adapter.deliver(session, compose_text(sender, recipient, body), scope_path(scope) or "", env)
+        text = compose_text(sender, recipient, body, current_origin(), scope)
+        where = adapter.deliver(session, text, scope_path(scope) or "", env)
         write_ack(scope, message_id, recipient, f"queued to {where}")
         return f"queued for {where} ({message_id})"
     if metadata_path(scope, recipient).exists():
@@ -973,6 +1045,9 @@ def deliver_message(scope: str, recipient: str, sender: str, body: str, message_
     payload: JsonObject = {
         "op": "message", "id": message_id, "from": sender, "message": body, "created_ns": time.time_ns(),
     }
+    origin = current_origin()
+    if origin is not None:
+        payload["origin"] = origin
     try:
         reply = request(socket_path(scope, recipient), payload)
     except PermissionError as exc:
@@ -1034,22 +1109,23 @@ class Listener:
         self.metadata = metadata_path(scope, name)
         self.closed = False
 
-    def open(self, shown_scope: str, existing: list[Participant]) -> None:
+    def open(self, shown_scope: str, existing: list[Participant], registered: list[Registration]) -> None:
         """Start accepting, publish this listener and tell the others and the user."""
         os.chmod(self.socket_file, 0o600)
         self.server.listen(32)
         self.server.settimeout(0.5)
         write_metadata(self.metadata, {"name": self.name, "pid": os.getpid()})
         mark_known(self.scope, self.name, "listener")
+        remember_scope(self.scope)
         notify(self.scope, self.name, "joined")
         if self.as_json:
             print(json.dumps({"kind": "joined", "scope": shown_scope, "name": self.name,
                               "pid": os.getpid()}), flush=True)
-            print(json.dumps({"kind": "participants", "participants": [asdict(row) for row in existing]}),
-                  flush=True)
+            print(json.dumps({"kind": "participants", "participants": [asdict(row) for row in existing],
+                              "registered": registered_rows(registered)}), flush=True)
         else:
             print(f"joined {shown_scope} as {self.name} (pid={os.getpid()})", flush=True)
-            print_rows(existing, "already connected:")
+            print_rows(existing, "already connected:", registered)
             print("listening; press Ctrl-C to leave", flush=True)
 
     def serve(self) -> None:
@@ -1071,7 +1147,7 @@ class Listener:
 
     def receive(self, message: JsonObject, peer_pid: int | None) -> None:
         keep_received(self.scope, self.name, message)
-        self.emit(message_event(self.name, message, peer_pid, self.preview))
+        self.emit(message_event(self.name, message, peer_pid, self.preview, self.scope))
 
     def emit(self, payload: JsonObject) -> None:
         emit_event(payload, self.as_json)
@@ -1131,7 +1207,7 @@ def join(args: argparse.Namespace) -> int:
 
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
-    listener.open(args.scope or str(Path.cwd()), existing)
+    listener.open(args.scope or str(Path.cwd()), existing, live_registrations(scope))
     try:
         listener.serve()
     finally:
@@ -1278,6 +1354,7 @@ def command_parser() -> argparse.ArgumentParser:
             "  filo profiles                        the roles you can join as: /filo manager\n"
             "  filo profile manager                 print what a manager is told to do\n"
             "  filo who\n"
+            "  filo who --all                    every scope that has someone in it\n"
             "  filo send --to claude --from codex --message 'review this'\n"
             "  filo send --to codex --from claude --stdin < message.txt\n"
             "  filo status ID                    was a message delivered?\n"
@@ -1334,6 +1411,8 @@ def command_parser() -> argparse.ArgumentParser:
     who_parser = sub.add_parser("who", help="list participants")
     scope_argument(who_parser)
     who_parser.add_argument("--json", action="store_true", help="emit machine-readable output")
+    who_parser.add_argument("--all", action="store_true",
+                            help="every scope that has someone in it, not only this one")
 
     send_parser = sub.add_parser("send", help="send one message")
     scope_argument(send_parser)
@@ -1355,20 +1434,40 @@ def command_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def who_command(args: argparse.Namespace, scope: str) -> int:
+def who_all(args: argparse.Namespace) -> int:
+    """List every scope that has someone in it, with who they are."""
+    found: list[tuple[str, list[Participant], list[Registration]]] = []
+    for scope in known_scopes():
+        participants, registered = participant_rows(scope), live_registrations(scope)
+        if participants or registered:
+            found.append((display_scope(scope), participants, registered))
+    if args.json:
+        print(json.dumps({"scopes": [
+            {"scope": shown, "participants": [asdict(row) for row in participants],
+             "registered": registered_rows(registered)} for shown, participants, registered in found]}), flush=True)
+        return 0
+    if not found:
+        print("nobody is connected in any scope")
+    for shown, participants, registered in found:
+        print_rows(participants, f"{shown}:", registered)
+    update_notice()
+    return 0
+
+
+def who_command(args: argparse.Namespace, scope: str | None) -> int:
+    if args.all:
+        return who_all(args)
+    assert scope is not None
     participants = participant_rows(scope)
     registered = live_registrations(scope)
     if args.json:
         print(json.dumps({
             "scope": args.scope or str(Path.cwd()),
             "participants": [asdict(row) for row in participants],
-            "registered": [{"name": row.name, "client": row.client, "session": row.session}
-                           for row in registered],
+            "registered": registered_rows(registered),
         }), flush=True)
         return 0
-    print_rows(participants, f"connected to {args.scope or Path.cwd()}:")
-    for row in registered:
-        print(f"  {row.name}  {row.client} session={row.session}  (registered)")
+    print_rows(participants, f"connected to {args.scope or Path.cwd()}:", registered)
     update_notice()
     return 0
 
@@ -1429,9 +1528,11 @@ def main(argv: list[str] | None = None) -> int:
             return rename(args)
         if args.command == "upgrade":
             return upgrade_command(args)
-        scope = canonical_scope(args.scope)
         if args.command == "who":
-            return who_command(args, scope)
+            if args.all and args.scope:
+                raise UserError("who: --all lists every scope, so it does not take --scope")
+            return who_command(args, None if args.all else canonical_scope(args.scope))
+        scope = canonical_scope(args.scope)
         if args.command == "show":
             return show_command(args, scope)
         if args.command == "status":

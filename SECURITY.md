@@ -38,6 +38,14 @@ protect.
   these are the address and token of its own sidecar, enough to send messages as that
   conversation. The file is `0600` and is removed when the session is forgotten.
 
+**Where a message came from.** A message carries the directory the sender ran in (`origin`), and a
+listener marks it `foreign` when that is not its scope; the skill tells agents to pass
+such a message to the user and wait. `origin` is reported by the sender's process, so it
+is as trustworthy as `--from` is, which is not at all against a process of yours: it
+helps an honest agent notice that a message crossed scopes, and it protects against nothing
+else. The `peer_pid` of an event is the one thing the system vouches for. `filo who --all`
+reads the runtime directory, which only you can read.
+
 **What a listener keeps.** For `filo show`, each listener writes the messages it receives to
 `inbox/<name>/<id>.json` in the scope's runtime directory (`0600` files in a `0700`
 directory) and removes them after 24 hours. They hold the whole text of the messages, so
