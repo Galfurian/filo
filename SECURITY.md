@@ -46,6 +46,12 @@ helps an honest agent notice that a message crossed scopes, and it protects agai
 else. The `peer_pid` of an event is the one thing the system vouches for. `filo who --all`
 reads the runtime directory, which only you can read.
 
+**A detached listener.** `join --detach` leaves a listener running in a process of its own, in
+a session of its own, with its output closed. It ends when the process given as `--parent`
+ends or when `filo leave --name` asks it to (any process of yours can ask, as any can send).
+It is not a service: it has no port, answers only its own user on its Unix socket, and
+there is none unless a session started it.
+
 **What a listener keeps.** For `filo show`, each listener writes the messages it receives to
 `inbox/<name>/<id>.json` in the scope's runtime directory (`0600` files in a `0700`
 directory) and removes them after 24 hours. They hold the whole text of the messages, so

@@ -22,8 +22,10 @@
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
-  <a href="#how-it-works">How it works</a> ·
   <a href="#profiles">Profiles</a> ·
+  <a href="#commands">Commands</a> ·
+  <a href="#install-and-uninstall">Install</a> ·
+  <a href="#how-it-works">How it works</a> ·
   <a href="#clients">Clients</a> ·
   <a href="#adding-another-llm">Add your own</a> ·
   <a href="#security">Security</a>
@@ -63,34 +65,6 @@ filo who
 filo send --to codex --from claude --message 'Please review the storage change.'
 ```
 
-## How it works
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/overview-dark.svg">
-    <img src="docs/images/overview-light.svg" alt="You start each session and run /filo manager; a message reaches a listening Claude session over a Unix socket, an OpenCode session through its plugin, registered Codex and agy sessions through their adapters, and a session that is away through a spool emptied when it rejoins" width="100%">
-  </picture>
-</p>
-
-You start every session yourself and tell it to join the pool of the directory it is
-in. From then on a session can message any other by name. How a message gets there
-depends on the recipient: three routes, shown above and described under
-[Delivery](#delivery).
-
-## Clients
-
-| Client | Connects with | A message arrives as | Limits |
-|---|---|---|---|
-| Claude | a Monitor on `filo join --as claude --json --preview 400` | an event that wakes it, with the reply command | the Monitor expires; start it again |
-| Codex | `filo register --as codex` (records `$CODEX_THREAD_ID`) | a normal turn, through `codex queue`, even while you type | none |
-| OpenCode | `/filo` runs the plugin, which starts `filo join` for that session | a user message in the same session, through the plugin; the chat is never locked | the plugin adds the tools `filo_join` and `filo_leave` to every OpenCode session; a message that arrives while OpenCode works waits for the step to end |
-| agy | `filo register --as agy` (records `$ANTIGRAVITY_CONVERSATION_ID`) | a system message, through `agentapi send-message`; the chat is never locked and no second `agy` starts | an idle agy starts a turn on its own when one arrives; a busy one gets it when its current step ends, and it does not interrupt a running command; `register` must run inside agy |
-| Anything else | `filo register --as NAME` | whatever its adapter does, see [Adding another LLM](#adding-another-llm) | |
-
-The skill (`skills/filo/SKILL.md`) is the instruction sheet each agent reads.
-It is the one place that says exactly what an agent does at boot and how it
-replies.
-
 ## Profiles
 
 A profile is a role: a markdown file of plain instructions that an agent follows
@@ -120,6 +94,61 @@ always do (`/model`, `/effort`), then join with the role you want it to play.
 
 A profile is text you chose, so the agent follows it. A message from another agent
 is not, and stays untrusted input.
+
+## Commands
+
+Everyday use is `/filo` in each session and then asking one agent to message another. These
+are the commands behind it, for when you or an agent run them by hand:
+
+```sh
+filo who                                    # who is here
+filo who --all                              # every scope that has someone in it
+filo send --to claude --from codex --message 'text'
+filo send --to codex --from claude --stdin < review.md
+filo status ID                              # delivered? pending? expired?
+filo show ID                                # the whole text of a message you received (kept for 24 hours)
+
+filo join --as human                        # a human listener, no LLM
+filo join --as claude --detach --parent PID # a listener that goes on by itself, and ends with PID
+filo watch --as claude --json               # a detached listener's messages, one JSON line each
+filo register --as agy --name reviewer      # announce a Codex or agy session, under a name you choose
+filo rename agy-2 reviewer                  # change the name of a registered session
+filo leave                                  # a registered session leaves the pool
+filo leave --name claude                    # a registered session or a listener, by name
+
+filo profiles                               # the roles you can join as
+filo profile manager                        # print one
+
+filo upgrade --check                        # is there a newer release? (the only command that uses the network)
+filo upgrade                                # install it, if this filo came from get.sh
+```
+
+### Names and scopes
+
+The scope is the current directory (or `--scope PATH_OR_KEYWORD`, to share one
+across directories). Sessions in different directories never see each other.
+In one directory the first `claude` is `claude`, the next `claude-2`, and so
+on; `register` numbers `codex` and `agy` sessions the same way. `join --exact`
+fails instead of adding a suffix. `register --name NAME` picks the name, and a
+name that is taken is an error. `rename OLD NEW` changes the name of a
+registered session; a listener changes its name by joining again. A registered
+session leaves with `filo leave`, and a listener by stopping or with `filo leave --name`. Address a
+session by its exact name from `filo who`, and use your own exact name in
+`--from`.
+
+`filo who --all` lists every scope that has someone in it: its directory, its listeners
+and its registered sessions. A scope shows up once a session has joined or registered
+with filo 0.3 or later.
+
+**Messages from another directory.** Writing to another scope needs `--scope`, and the
+message says where it was sent from. A `message` event has the `scope` of the listener,
+the `origin` (the directory the sender ran in) and, when that is another directory,
+`"foreign": true`; its `reply` command then carries `--scope` with that directory, since
+that is where the sender listens. A message for a Codex, agy or OpenCode session says
+"sent from DIRECTORY (another scope)". The skill tells an agent to pass such a message on to
+the user and wait. `origin` is what the sender's process reports, not proof: any process
+of yours can say anything, as `--from` can. Its use is to let an agent notice that a
+message did not come from its own directory.
 
 ## Install and uninstall
 
@@ -187,51 +216,40 @@ and this checkout, and says so. Override the locations with `FILO_BIN_DIR`,
 `FILO_CLAUDE_SKILLS`, `FILO_AGENTS_SKILLS`, `FILO_AGY_SKILLS` and `FILO_OPENCODE_DIR`. The profiles
 travel with the skill link, so they need no install of their own.
 
-## Commands
+## Troubleshooting
 
-```sh
-filo who
-filo who --all          # every scope that has someone in it, with who they are
-filo send --to claude --from codex --message 'text'
-filo send --to codex --from claude --stdin < review.md
-filo status ID          # delivered? pending? expired?
-filo show ID            # the whole text of a message you received (kept for 24 hours)
-filo join --as human    # a human listener, no LLM
-filo register --as agy --name reviewer   # choose the name of a registered session
-filo rename agy-2 reviewer               # or change it later
-filo leave                                  # a registered session leaves the pool
-filo profiles                               # the roles you can join as
-filo profile manager                        # print one
-filo upgrade --check                        # is there a newer release? (the only command that uses the network)
-filo upgrade                                # install it, if this filo came from get.sh
-```
+- **`recipient 'X' is not connected and has not been seen here`**: X never joined in this
+  directory, or ran `filo leave`. `filo who` shows who is here; sessions in other
+  directories never see each other.
+- **`X is offline: queued`**: X is a listener that is away. The message waits for an hour
+  and arrives when it rejoins.
+- **A Claude Monitor ended**: it does that after at most 30 minutes. Start it again; the listener
+  was never gone, so nothing was lost and nobody was told.
+- **A message looks cut off**: the Monitor shows only the start of a long line. `filo show ID`
+  prints the whole message.
+- **agy** must run `filo register` from inside its own session, because it copies the
+  session's address and token. **OpenCode** needs a restart after `./install.sh`, so that
+  it loads the plugin.
+- **`the socket path is too long`**: a Unix socket path has a limit (103 bytes on macOS,
+  107 on Linux). Set `FILO_DIR` to a shorter directory.
+- In a bug report, give `filo --version` and the versions of the clients.
 
-### Names and scopes
+## How it works
 
-The scope is the current directory (or `--scope PATH_OR_KEYWORD`, to share one
-across directories). Sessions in different directories never see each other.
-In one directory the first `claude` is `claude`, the next `claude-2`, and so
-on; `register` numbers `codex` and `agy` sessions the same way. `join --exact`
-fails instead of adding a suffix. `register --name NAME` picks the name, and a
-name that is taken is an error. `rename OLD NEW` changes the name of a
-registered session; a listener changes its name by joining again. A registered
-session leaves with `filo leave`, and a listener by stopping. Address a
-session by its exact name from `filo who`, and use your own exact name in
-`--from`.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/overview-dark.svg">
+    <img src="docs/images/overview-light.svg" alt="You start each session and run /filo manager; a message reaches a listening Claude session over a Unix socket, an OpenCode session through its plugin, registered Codex and agy sessions through their adapters, and a session that is away through a spool emptied when it rejoins" width="100%">
+  </picture>
+</p>
 
-`filo who --all` lists every scope that has someone in it: its directory, its listeners
-and its registered sessions. A scope shows up once a session has joined or registered
-with filo 0.3 or later.
+**From here on the README explains how filo works inside. You do not need it to use filo:
+the sections above are enough.**
 
-**Messages from another directory.** Writing to another scope needs `--scope`, and the
-message says where it was sent from. A `message` event has the `scope` of the listener,
-the `origin` (the directory the sender ran in) and, when that is another directory,
-`"foreign": true`; its `reply` command then carries `--scope` with that directory, since
-that is where the sender listens. A message for a Codex, agy or OpenCode session says
-"sent from DIRECTORY (another scope)". The skill tells an agent to pass such a message on to
-the user and wait. `origin` is what the sender's process reports, not proof: any process
-of yours can say anything, as `--from` can. Its use is to let an agent notice that a
-message did not come from its own directory.
+You start every session yourself and tell it to join the pool of the directory it is
+in. From then on a session can message any other by name. How a message gets there
+depends on the recipient: three routes, shown above and described under
+[Delivery](#delivery).
 
 ### Delivery
 
@@ -251,6 +269,17 @@ write files) leave the message in the spool automatically, and the listener
 delivers it within half a second. Every message has an id; `status` reports
 whether it was delivered.
 
+**A listener that outlives its Monitor.** A Claude Monitor ends after at most 30 minutes. If the
+listener were the Monitor, each end would tell every other session that it left, and each
+start that it joined, and each of those notices wakes them. So `filo join --detach --parent PID`
+starts the listener in a process of its own (it ends when `PID`, the Claude session, does, or
+with `filo leave --name NAME`), and the Monitor runs `filo watch`, which reads what that
+listener keeps and prints one JSON line per message, and never presence notices. Starting
+`watch` again changes nothing for anyone and prints what came in meanwhile (a message printed just
+as the previous `watch` ended can come again, with the same id: filo may repeat one, and never loses one).
+A message sent to a detached listener counts as delivered when the listener has it, whether or
+not a `watch` is running.
+
 **Long messages in a Monitor.** A Claude Monitor shows only the start of a long line (about 500
 characters), and cuts it without a mark. So `join --json --preview N` (N at least 100) cuts an
 event whose JSON line is longer than N characters and says so: `"truncated": true`, `"length"`
@@ -258,6 +287,24 @@ event whose JSON line is longer than N characters and says so: `"truncated": tru
 listener keeps what it receives, privately, for 24 hours, so `show` works whether or not
 `--preview` was used. In every event the body comes last, after `from`, `id` and `reply`.
 Without `--preview` an event is whole, which is what the OpenCode plugin needs.
+
+## Clients
+
+How each client is connected underneath. You do not do any of this by hand: `/filo` in a
+session (or `$filo` in Codex) runs it, following the skill. This section says what it runs,
+so that you can tell what is going on and what can go wrong.
+
+| Client | Connects with | A message arrives as | Limits |
+|---|---|---|---|
+| Claude | `filo join --detach --parent $CLAUDE_PID`, and a Monitor on `filo watch` | an event that wakes it, with the reply command | the Monitor expires after 30 minutes; start it again, which changes nothing for the others |
+| Codex | `filo register --as codex` (records `$CODEX_THREAD_ID`) | a normal turn, through `codex queue`, even while you type | none |
+| OpenCode | `/filo` runs the plugin, which starts `filo join` for that session | a user message in the same session, through the plugin; the chat is never locked | the plugin adds the tools `filo_join` and `filo_leave` to every OpenCode session; a message that arrives while OpenCode works waits for the step to end |
+| agy | `filo register --as agy` (records `$ANTIGRAVITY_CONVERSATION_ID`) | a system message, through `agentapi send-message`; the chat is never locked and no second `agy` starts | an idle agy starts a turn on its own when one arrives; a busy one gets it when its current step ends, and it does not interrupt a running command; `register` must run inside agy |
+| Anything else | `filo register --as NAME` | whatever its adapter does, see [Adding another LLM](#adding-another-llm) | |
+
+The skill (`skills/filo/SKILL.md`) is the instruction sheet each agent reads.
+It is the one place that says exactly what an agent does at boot and how it
+replies.
 
 ## Compatibility
 
@@ -274,20 +321,6 @@ interfaces that can change in an update: for agy, `agentapi` and the `ANTIGRAVIT
 variables, which were found by inspecting the CLI and not in documentation; for
 OpenCode, the plugin API. If a client updates and delivery stops, that is the first
 place to look; reports with the version are welcome.
-
-## Troubleshooting
-
-- **`recipient 'X' is not connected and has not been seen here`**: X never joined in this
-  directory, or ran `filo leave`. `filo who` shows who is here; sessions in other
-  directories never see each other.
-- **`X is offline: queued`**: X is a listener that is away. The message waits for an hour
-  and arrives when it rejoins.
-- **agy** must run `filo register` from inside its own session, because it copies the
-  session's address and token. **OpenCode** needs a restart after `./install.sh`, so that
-  it loads the plugin.
-- **`the socket path is too long`**: a Unix socket path has a limit (103 bytes on macOS,
-  107 on Linux). Set `FILO_DIR` to a shorter directory.
-- In a bug report, give `filo --version` and the versions of the clients.
 
 ## Adding another LLM
 

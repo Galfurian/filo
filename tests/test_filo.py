@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 from unittest import mock
@@ -757,11 +758,14 @@ class AdapterConfigTests(RuntimeCase):
         self.assertEqual(self.msg("leave", "--name", "other").returncode, 1)
         self.assertIn("not registered", self.msg("leave", env={"GEMINI_SESSION": "gem-000000"}).stderr)
 
-    def test_leaving_names_the_way_out_for_a_listener(self) -> None:
-        self.listen("claude")
+    def test_leave_asks_a_listener_to_stop_and_refuses_a_name_that_is_not_there(self) -> None:
+        process, _lines, _joined = self.listen("claude")
+        left = self.msg("leave", "--name", "claude")
+        self.assertEqual(left.returncode, 0, left.stderr)
+        self.assertEqual(process.wait(timeout=5), 0)
         refused = self.msg("leave", "--name", "claude")
         self.assertEqual(refused.returncode, 1)
-        self.assertIn("stop", refused.stderr)
+        self.assertIn("not a registered session or a listener", refused.stderr)
 
     def test_a_listener_started_for_a_parent_leaves_when_the_parent_ends(self) -> None:
         parent = subprocess.Popen(["sleep", "30"])
@@ -1415,6 +1419,152 @@ class JoinedEventTests(RuntimeCase):
         assert participants is not None
         self.assertEqual(participants["participants"], [])
         self.assertEqual(participants["registered"], [{"name": "gemini", "client": "gemini", "session": "gem-123456"}])
+
+
+class DetachedListenerTests(RuntimeCase):
+    """`join --detach` and `watch`: a listener that outlives the command that started it, and a reader
+    that can come and go without the listener or the others noticing."""
+
+    def parent(self) -> subprocess.Popen[bytes]:
+        process = subprocess.Popen(["sleep", "600"], stdout=subprocess.PIPE)
+        self.children.append(process)
+        return process
+
+    def detach(self, name: str, parent: subprocess.Popen[bytes]) -> dict[str, object]:
+        # run() waits for the end of the output: it would hang if the listener kept it open
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "join", "--as", name, "--detach", "--parent", str(parent.pid), "--json"],
+            cwd=self.scope, env=self.environment, capture_output=True, text=True, check=False, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        joined = json.loads(result.stdout.splitlines()[0])
+        self.assertEqual((joined["kind"], joined["name"], joined["detached"]), ("joined", name, True))
+        return dict(joined)
+
+    def watch(self, name: str, *extra: str) -> tuple[subprocess.Popen[bytes], Lines]:
+        process = subprocess.Popen(
+            [sys.executable, str(SCRIPT), "watch", "--as", name, *extra], cwd=self.scope,
+            env=self.environment, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.children.append(process)
+        return process, Lines(process)
+
+    def listening(self) -> list[str]:
+        return [row["name"] for row in json.loads(self.msg("who", "--json").stdout)["participants"]]
+
+    def wait_until(self, condition: Callable[[], bool], what: str) -> None:
+        for _ in range(100):
+            if condition():
+                return
+            time.sleep(0.1)
+        self.fail(what)
+
+    def test_the_listener_goes_on_after_the_command_returns_and_ends_with_its_parent(self) -> None:
+        parent = self.parent()
+        joined = self.detach("boss", parent)
+        self.assertEqual(self.listening(), ["boss"])
+        pid = int(str(joined["pid"]))
+        self.assertNotEqual(pid, parent.pid)
+        os.kill(pid, 0)                                 # alive, though the command is long gone
+        self.assertEqual(os.getsid(pid), pid)            # in a session of its own
+        parent.terminate()
+        parent.wait(timeout=5)
+        self.wait_until(lambda: self.listening() == [], "the listener did not end with its parent")
+
+    def test_detach_needs_a_parent_that_is_running(self) -> None:
+        missing = self.msg("join", "--as", "boss", "--detach")
+        self.assertEqual(missing.returncode, 1)
+        self.assertIn("--parent", missing.stderr)
+        parent = self.parent()
+        parent.terminate()
+        parent.wait(timeout=5)
+        gone = self.msg("join", "--as", "boss", "--detach", "--parent", str(parent.pid))
+        self.assertEqual(gone.returncode, 1)
+        self.assertIn("not running", gone.stderr)
+
+    def test_watch_reports_what_arrives_with_where_it_came_from(self) -> None:
+        self.detach("boss", self.parent())
+        _, lines = self.watch("boss")
+        time.sleep(0.5)
+        self.assertEqual(self.msg("send", "--to", "boss", "--from", "me", "--message", "hello").returncode, 0)
+        event = lines.message()
+        assert event is not None
+        self.assertEqual((event["from"], event["message"], event["to"]), ("me", "hello", "boss"))
+        self.assertEqual(event["scope"], str(self.scope.resolve()))
+        self.assertEqual(event["origin"], str(self.scope.resolve()))
+        self.assertIsInstance(event["peer_pid"], int)
+        self.assertEqual(list(event)[-1], "message")
+
+    def test_a_long_message_is_cut_by_preview_and_show_prints_it_whole(self) -> None:
+        self.detach("boss", self.parent())
+        _, lines = self.watch("boss", "--preview", "400")
+        time.sleep(0.5)
+        body = "Do this first. " + "More text. " * 200 + "THE END"
+        self.msg("send", "--to", "boss", "--from", "me", "--stdin", stdin=body)
+        event = lines.message()
+        assert event is not None
+        self.assertIs(event["truncated"], True)
+        self.assertNotIn("THE END", json.dumps(event))
+        self.assertEqual(self.msg("show", str(event["id"])).stdout, body + "\n")
+
+    def test_a_watch_that_starts_again_prints_only_what_it_missed(self) -> None:
+        self.detach("boss", self.parent())
+        first, lines = self.watch("boss")
+        time.sleep(0.5)
+        self.msg("send", "--to", "boss", "--from", "me", "--message", "one")
+        seen = lines.message()
+        assert seen is not None
+        # A watch prints a message and then notes it; one that is stopped in between prints it again
+        # on its return (it never loses one). Wait for the note, so that the test is about the usual case.
+        self.wait_until(lambda: any(self.runtime.glob("*/inbox/boss/.cursor")), "the watch did not note it")
+        first.terminate()
+        first.wait(timeout=5)
+        self.msg("send", "--to", "boss", "--from", "me", "--message", "two")
+        self.msg("send", "--to", "boss", "--from", "me", "--message", "three")
+        _, again = self.watch("boss")
+        self.assertEqual([(again.message() or {}).get("message"), (again.message(2) or {}).get("message")],
+                         ["two", "three"])
+        self.assertIsNone(again.message(1), "a message was printed twice")
+
+    def test_the_messages_of_an_earlier_listener_are_not_printed_to_the_next_one(self) -> None:
+        old_parent = self.parent()
+        self.detach("boss", old_parent)
+        self.msg("send", "--to", "boss", "--from", "me", "--message", "for the old one")
+        old_parent.terminate()
+        old_parent.wait(timeout=5)
+        self.wait_until(lambda: self.listening() == [], "the first listener did not end")
+        self.detach("boss", self.parent())
+        _, lines = self.watch("boss")
+        self.assertIsNone(lines.message(1.5))
+
+    def test_watch_says_when_the_listener_is_gone_and_refuses_one_that_is_not_there(self) -> None:
+        refused = self.msg("watch", "--as", "nobody")
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("nobody called", refused.stderr)
+        parent = self.parent()
+        self.detach("boss", parent)
+        process, lines = self.watch("boss")
+        time.sleep(0.5)
+        parent.terminate()
+        parent.wait(timeout=5)
+        ended = lines.next(8)
+        assert ended is not None
+        self.assertEqual((ended["kind"], ended["name"]), ("ended", "boss"))
+        process.wait(timeout=5)
+        self.assertEqual(process.returncode, 0)
+
+    def test_leave_stops_a_detached_listener(self) -> None:
+        self.detach("boss", self.parent())
+        left = self.msg("leave", "--name", "boss")
+        self.assertEqual(left.returncode, 0, left.stderr)
+        self.wait_until(lambda: self.listening() == [], "the listener did not leave")
+        self.assertEqual(self.msg("leave", "--name", "boss").returncode, 1)
+
+    def test_a_detached_listener_prints_no_presence_of_its_own(self) -> None:
+        self.detach("boss", self.parent())
+        _, lines = self.watch("boss")
+        other, _, _ = self.listen("other")            # joins, which would be a presence event for a classic listener
+        other.terminate()
+        other.wait(timeout=5)
+        self.assertIsNone(lines.next(1.5), "a presence notice reached the watcher")
 
 
 class GetScriptTests(unittest.TestCase):
