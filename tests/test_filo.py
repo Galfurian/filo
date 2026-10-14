@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import http.server
 import importlib.util
@@ -1814,6 +1815,26 @@ class DetachedListenerTests(RuntimeCase):
         self.assertEqual((ended["kind"], ended["name"]), ("ended", "boss"))
         process.wait(timeout=5)
         self.assertEqual(process.returncode, 0)
+
+    def test_listeners_that_join_at_the_same_time_get_different_names(self) -> None:
+        # Sessions that are started together (a few agents in one terminal multiplexer) all ask for the
+        # same default name, and each must end up with one that is its own.
+        parent = self.parent()
+        processes = [subprocess.Popen(
+            [sys.executable, str(SCRIPT), "join", "--as", "same", "--detach", "--parent", str(parent.pid), "--json"],
+            cwd=self.scope, env=self.environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            for _ in range(8)]
+        names: list[str] = []
+        for process in processes:
+            out, err = process.communicate(timeout=30)
+            self.assertEqual(process.returncode, 0, err)
+            names.append(json.loads(out.splitlines()[0])["name"])
+        self.assertEqual(len(set(names)), 8, names)
+        self.assertEqual(sorted(self.listening()), sorted(names))
+        for name in names:    # the name is held by the listener itself, not by the command that started it
+            [lock_file] = self.runtime.glob(f"*/{name}.lock")
+            with open(lock_file, "rb") as handle, self.assertRaises(BlockingIOError):
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def test_a_parent_that_is_not_a_process_is_refused(self) -> None:
         # kill(0, 0) and kill(-1, 0) succeed, so such a "parent" would never end and the listener with it
