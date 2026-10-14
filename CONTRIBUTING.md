@@ -26,7 +26,7 @@ python3 -m unittest discover -s tests
 ruff check .
 mypy
 pyright
-shellcheck -s sh install.sh uninstall.sh scripts/common.sh
+shellcheck -s sh install.sh uninstall.sh get.sh scripts/common.sh
 ```
 
 The tests need no client installed: they use stand-ins. The OpenCode plugin is checked with
@@ -44,7 +44,9 @@ with the code, and update the README and `skills/filo/SKILL.md` when behaviour c
 skill is what the agents read.
 
 Releases are tags: raise `version` in `pyproject.toml` and `__version__` in `filo.py`
-together, write `docs/releases/vX.Y.Z.md`, and tag `vX.Y.Z`.
+together, write `docs/releases/vX.Y.Z.md`, and tag `vX.Y.Z`. The release workflow stamps
+`get.sh` with the version and the hash of the archive (the two lines that hold `@VERSION@` and
+`@SHA256@`; keep them as they are) and attaches it, signed, to the release.
 
 ## Adding a client
 

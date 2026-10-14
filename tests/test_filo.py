@@ -1152,6 +1152,133 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.uninstall("--force").returncode, 2)
 
 
+class GetScriptTests(unittest.TestCase):
+    """get.sh, as the release workflow stamps it, against an archive on disk."""
+
+    def setUp(self) -> None:
+        self.base = tempfile.TemporaryDirectory()
+        root = Path(self.base.name)
+        self.release = root / "release"
+        self.release.mkdir()
+        tree = root / "filo-9.9.9"
+        shutil.copytree(ROOT, tree, ignore=shutil.ignore_patterns(".git", "__pycache__", "tests"))
+        self.archive = self.release / "filo-9.9.9.tar.gz"
+        subprocess.run(["tar", "-czf", str(self.archive), "-C", str(root), "filo-9.9.9"], check=True)
+        self.sha = hashlib.sha256(self.archive.read_bytes()).hexdigest()
+        self.home = root / "data" / "filo"
+        self.bin = root / "bin"
+        self.environment = {
+            **os.environ,
+            "HOME": str(root / "home"),
+            "FILO_HOME": str(self.home),
+            "FILO_RELEASE_URL": f"file://{self.release}",
+            "FILO_BIN_DIR": str(self.bin),
+            "FILO_CLAUDE_SKILLS": str(root / "claude" / "skills"),
+            "FILO_AGENTS_SKILLS": str(root / "agents" / "skills"),
+            "FILO_AGY_SKILLS": str(root / "agy" / "skills"),
+            "FILO_OPENCODE_DIR": str(root / "opencode"),
+        }
+        (root / "home").mkdir()
+        self.script = self.stamp(version="9.9.9", sha=self.sha)
+
+    def tearDown(self) -> None:
+        self.base.cleanup()
+
+    def stamp(self, version: str, sha: str, name: str = "get.sh") -> Path:
+        text = (ROOT / "get.sh").read_text(encoding="utf-8")
+        text = text.replace('version="@VERSION@"', f'version="{version}"').replace('sha256="@SHA256@"', f'sha256="{sha}"')
+        path = Path(self.base.name) / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def get(self, *args: str, script: Path | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([SHELL, str(script or self.script), *args], env=self.environment,
+                              text=True, capture_output=True, check=False, timeout=60)
+
+    def test_install_checks_the_hash_unpacks_and_links_and_uninstall_removes_it_all(self) -> None:
+        result = self.get()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("checked filo-9.9.9.tar.gz", result.stdout)
+        self.assertTrue((self.home / "filo.py").is_file())
+        self.assertEqual((self.home / ".filo-release").read_text(encoding="utf-8"),
+                         f"version=9.9.9\nsha256={self.sha}\n")
+        self.assertEqual((self.bin / "filo").resolve(), (self.home / "filo.py").resolve())
+        again = self.get()
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertIn("already linked", again.stdout)
+        self.assertEqual([path.name for path in self.home.parent.iterdir()], ["filo"])
+        removed = self.get("uninstall")
+        self.assertEqual(removed.returncode, 0, removed.stderr)
+        self.assertFalse(self.home.exists())
+        self.assertFalse((self.bin / "filo").is_symlink())
+
+    def test_a_dry_run_says_what_it_would_do_and_changes_nothing(self) -> None:
+        dry = self.get("--dry-run")
+        self.assertEqual(dry.returncode, 0, dry.stderr)
+        for expected in (f"file://{self.release}/filo-9.9.9.tar.gz", self.sha, str(self.home), "never uses sudo",
+                         "Dry run: nothing was changed"):
+            self.assertIn(expected, dry.stdout)
+        self.assertFalse(self.home.parent.exists())
+        self.assertFalse(self.bin.exists())
+        self.assertEqual(self.get().returncode, 0)
+        self.assertIn("Dry run", self.get("uninstall", "--dry-run").stdout)
+        self.assertTrue((self.home / "filo.py").is_file())
+        self.assertTrue((self.bin / "filo").is_symlink())
+
+    def test_an_archive_with_the_wrong_hash_is_refused_and_leaves_nothing(self) -> None:
+        wrong = self.stamp(version="9.9.9", sha="0" * 64, name="wrong.sh")
+        result = self.get(script=wrong)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("is not the release", result.stderr)
+        self.assertFalse(self.home.exists())
+        self.assertEqual([path.name for path in self.home.parent.iterdir()] if self.home.parent.exists() else [], [])
+        self.assertFalse(self.bin.exists())
+
+    def test_a_copy_that_was_not_stamped_by_a_release_is_refused(self) -> None:
+        result = self.get(script=ROOT / "get.sh")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not made by a release", result.stderr)
+        self.assertFalse(self.home.exists())
+
+    def test_a_directory_that_is_not_ours_is_neither_replaced_nor_deleted(self) -> None:
+        self.home.mkdir(parents=True)
+        (self.home / "mine.txt").write_text("keep", encoding="utf-8")
+        for action in ((), ("uninstall",)):
+            result = self.get(*action)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertEqual((self.home / "mine.txt").read_text(encoding="utf-8"), "keep")
+        self.assertFalse(self.bin.exists())
+
+    def test_it_refuses_a_directory_it_should_never_delete(self) -> None:
+        for bad in ("relative/dir", "/", self.environment["HOME"]):
+            self.environment["FILO_HOME"] = bad
+            result = self.get("uninstall")
+            self.assertEqual(result.returncode, 1, bad)
+            self.assertTrue(Path(self.environment["HOME"]).is_dir())
+        link = Path(self.base.name) / "link"
+        link.symlink_to(self.release)
+        self.environment["FILO_HOME"] = str(link)
+        self.assertEqual(self.get("uninstall").returncode, 1)
+        self.assertTrue(self.archive.is_file())
+
+    def test_only_https_is_accepted_for_a_download(self) -> None:
+        self.environment["FILO_RELEASE_URL"] = "http://example.invalid/releases"
+        result = self.get()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("only https://", result.stderr)
+
+    def test_unknown_options_are_refused(self) -> None:
+        self.assertEqual(self.get("--force").returncode, 2)
+
+    def test_the_stamp_lines_are_the_ones_the_release_workflow_replaces(self) -> None:
+        text = (ROOT / "get.sh").read_text(encoding="utf-8")
+        self.assertIn('\nversion="@VERSION@"\n', text)
+        self.assertIn('\nsha256="@SHA256@"\n', text)
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn("@VERSION@", workflow)
+        self.assertIn("@SHA256@", workflow)
+
+
 class PeerCheckTests(unittest.TestCase):
     """The listener answers connections from this user only."""
 

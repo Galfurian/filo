@@ -39,8 +39,19 @@ loaded its profile, joined the pool, listed who else is there and waits.*
 ## Quick start
 
 ```sh
-./install.sh
+curl -fsSL https://github.com/Galfurian/filo/releases/latest/download/get.sh | sh
 ```
+
+To remove it again:
+
+```sh
+curl -fsSL https://github.com/Galfurian/filo/releases/latest/download/get.sh | sh -s -- uninstall
+```
+
+Both need Python 3.10 or later, `curl` or `wget`, `tar` and `sha256sum` or `shasum`, and
+no sudo. If you would rather read first, download `get.sh`, then run `sh get.sh --dry-run`
+(see [Install and uninstall](#install-and-uninstall)). From a checkout, `./install.sh` does
+the same job.
 
 Then run `/filo` in each session, in the same directory, or `/filo manager` to
 join under a role (see [Profiles](#profiles)). Each session connects, says who else
@@ -111,6 +122,27 @@ is not, and stays untrusted input.
 
 ## Install and uninstall
 
+**From a release.** The one line in the [Quick start](#quick-start) downloads `get.sh`,
+which is attached to every release. It takes `install` (the default), `uninstall` and
+`--dry-run`:
+
+```sh
+curl -fsSLO https://github.com/Galfurian/filo/releases/latest/download/get.sh
+sh get.sh --dry-run      # print what it would do, change nothing
+sh get.sh                # install
+sh get.sh uninstall      # also takes --dry-run
+```
+
+The release workflow writes the version and the SHA-256 of the release archive into
+`get.sh`, so it can fetch only that archive, over https, and stops if the hash differs. It
+unpacks the archive into `~/.local/share/filo` (`FILO_HOME` changes that), runs the
+`install.sh` inside, and prints what that links before it does. Running it again upgrades
+to the version of the `get.sh` you ran. Uninstall runs the `uninstall.sh` there and
+deletes the directory, but only if the script made it. Check a release as described in
+[SECURITY.md](SECURITY.md#checking-a-release).
+
+**From a checkout.**
+
 ```sh
 ./install.sh --dry-run   # print what it would do, change nothing
 ./install.sh
@@ -119,8 +151,9 @@ is not, and stays untrusted input.
 
 Both scripts first print exactly what they will do. The installer needs no
 sudo and copies nothing, and it changes no permissions: it makes symbolic links
-into this checkout, so `git pull` upgrades everything. (Git tracks `filo.py` as
-executable; if yours is not, the installer stops and says so.)
+into this checkout (or into the directory `get.sh` unpacked), so `git pull` upgrades a
+checkout. (Git tracks `filo.py` as executable; if yours is not, the installer stops and
+says so.)
 
 - `~/.local/bin/filo` -> `filo.py`
 - for OpenCode, the plugin `plugins/opencode/filo.js` in `~/.config/opencode/plugins`
