@@ -1511,6 +1511,19 @@ class DetachedListenerTests(RuntimeCase):
         self.children.append(process)
         return process
 
+    def tearDown(self) -> None:
+        # A detached listener is nobody's child: it notices that its parent is gone within half a second
+        # and then writes its last files into the runtime directory. Wait for it, so that the directory
+        # is not removed under it.
+        for child in self.children:
+            if child.poll() is None:
+                child.terminate()
+        for _ in range(100):
+            if not list(self.runtime.glob("*/*.json")):
+                break
+            time.sleep(0.1)
+        super().tearDown()
+
     def detach(self, name: str, parent: subprocess.Popen[bytes]) -> dict[str, object]:
         # run() waits for the end of the output: it would hang if the listener kept it open
         result = subprocess.run(
