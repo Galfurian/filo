@@ -374,9 +374,17 @@ def frame(payload: JsonObject) -> bytes:
     return (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
 
 
-def read_frame(connection: socket.socket) -> JsonObject:
+def read_frame(connection: socket.socket, timeout: float | None = None) -> JsonObject:
+    """One message from a connection. With ``timeout`` the whole message has to arrive within it: a timeout
+    on each read starts again with every byte, and so lets a client that sends one now and then hold on."""
+    deadline = None if timeout is None else time.monotonic() + timeout
     data = bytearray()
     while len(data) < MAX_FRAME:
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("the message did not arrive in time")
+            connection.settimeout(remaining)
         chunk = connection.recv(min(65536, MAX_FRAME - len(data)))
         if not chunk:
             break
@@ -395,7 +403,7 @@ def request(path: Path, payload: JsonObject) -> JsonObject:
     try:
         connection.connect(str(path))
         connection.sendall(frame(payload))
-        return read_frame(connection)
+        return read_frame(connection, SOCKET_TIMEOUT)
     finally:
         connection.close()
 
@@ -1308,10 +1316,11 @@ class Listener:
         try:
             if peer_uid is not None and peer_uid != os.getuid():
                 raise ProtocolError("peer belongs to another user")
-            response = self.respond(read_frame(connection), peer_pid)
+            response = self.respond(read_frame(connection, SERVER_TIMEOUT), peer_pid)
         except (OSError, ValueError) as exc:
             response = {"ok": False, "error": str(exc)}
         try:
+            connection.settimeout(SERVER_TIMEOUT)    # what is left of the time for reading is not for this
             connection.sendall(frame(response))
         except OSError:
             pass
