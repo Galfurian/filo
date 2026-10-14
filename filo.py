@@ -25,7 +25,10 @@ import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -42,6 +45,12 @@ MAX_FRAME = 4 * 1024 * 1024
 NAME_ALPHABET = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
 SESSION_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z._-]{5,127}")
 MESSAGE_ID = re.compile(r"[0-9a-f]{10,20}-[0-9a-f]{6}")
+RELEASES_URL = "https://github.com/Galfurian/filo/releases"
+RELEASE_TAG = re.compile(r"/releases/tag/v(\d+\.\d+\.\d+)$")
+STAMPED_VERSION = re.compile(r'(?m)^version="(\d+\.\d+\.\d+)"$')
+VERSION = re.compile(r"\d+\.\d+\.\d+")
+RELEASE_MARKER = ".filo-release"  # written by get.sh into the directory it unpacks
+UPDATE_CHECK_TTL = 24 * 3600.0
 
 
 class UserError(Exception):
@@ -1065,6 +1074,121 @@ def join(args: argparse.Namespace) -> int:
 
 # --- command line ------------------------------------------------------------
 
+def releases_url() -> str:
+    """Where releases are looked up. FILO_RELEASES_URL is for a mirror and for the tests."""
+    url = os.environ.get("FILO_RELEASES_URL", RELEASES_URL).rstrip("/")
+    if not secure_url(url):
+        raise UserError(f"upgrade: FILO_RELEASES_URL must be an https:// URL, not {url}")
+    return url
+
+
+def secure_url(url: str) -> bool:
+    return url.startswith(("https://", "http://127.0.0.1:", "http://localhost:"))
+
+
+def version_tuple(text: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in text.split("."))
+
+
+def fetch_url(url: str, method: str = "GET", timeout: float = 10.0) -> tuple[str, bytes]:
+    """Fetch a URL and return the address it ended at and up to a megabyte of its body."""
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method=method), timeout=timeout) as response:
+            final = cast(str, response.geturl())
+            if not secure_url(final):
+                raise UserError(f"upgrade: {url} led to {final}, which is not https")
+            return final, cast(bytes, response.read(1_000_000))
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise UserError(f"upgrade: could not fetch {url}: {exc}") from exc
+
+
+def latest_version(timeout: float = 10.0) -> str:
+    """The version of the newest release: the address /releases/latest redirects to."""
+    final, _ = fetch_url(f"{releases_url()}/latest", method="HEAD", timeout=timeout)
+    found = RELEASE_TAG.search(final)
+    if found is None:
+        raise UserError(f"upgrade: cannot read a version from {final}")
+    return found.group(1)
+
+
+def install_directory() -> Path:
+    """Where this filo lives, as the links made by the installer name it (links not resolved)."""
+    script = Path(os.path.abspath(__file__))
+    if script.is_symlink():
+        script = Path(os.path.abspath(script.parent / os.readlink(script)))
+    return script.parent
+
+
+def upgrade_command(args: argparse.Namespace) -> int:
+    """Say whether a newer release exists and, unless --check, install it with that release's get.sh."""
+    latest = latest_version()
+    if version_tuple(latest) <= version_tuple(__version__):
+        print(f"filo {__version__} is the latest version.")
+        return 0
+    print(f"filo {__version__} is installed; {latest} is available: {releases_url()}/tag/v{latest}")
+    if args.check:
+        print("Run `filo upgrade` to install it.")
+        return 0
+    directory = install_directory()
+    if not (directory / RELEASE_MARKER).is_file():
+        if (directory / ".git").exists():
+            print(f"This is a checkout. Update it with: git -C {directory} pull")
+            return 0
+        raise UserError("upgrade: this filo was not installed by get.sh, so it cannot upgrade itself")
+    _, body = fetch_url(f"{releases_url()}/download/v{latest}/get.sh")
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise UserError("upgrade: the get.sh of that release is not text") from exc
+    stamped = STAMPED_VERSION.search(text)
+    if stamped is None or stamped.group(1) != latest:
+        raise UserError(f"upgrade: the get.sh of that release is not stamped for {latest}; not running it")
+    with tempfile.TemporaryDirectory(prefix="filo-upgrade.") as scratch:
+        script = Path(scratch) / "get.sh"
+        script.write_text(text, encoding="utf-8")
+        env = {**os.environ, "FILO_HOME": str(directory)}
+        print()
+        planned = subprocess.run(["sh", str(script), "--dry-run"], env=env, check=False).returncode
+        if planned != 0:
+            return planned
+        if not args.yes:
+            if not sys.stdin.isatty():
+                raise UserError("upgrade: this is not a terminal; run it again with --yes to go ahead")
+            try:
+                answer = input("\nUpgrade now? [y/N] ")
+            except EOFError:
+                answer = ""
+            if answer.strip().lower() not in ("y", "yes"):
+                print("Nothing changed.")
+                return 0
+        return subprocess.run(["sh", str(script)], env=env, check=False).returncode
+
+
+def update_notice() -> None:
+    """With FILO_CHECK_UPDATES=1, say on stderr when a newer release exists. At most one look a day."""
+    if os.environ.get("FILO_CHECK_UPDATES") != "1":
+        return
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / APP / "latest-version"
+    latest = ""
+    try:
+        if time.time() - cache.stat().st_mtime < UPDATE_CHECK_TTL:
+            latest = cache.read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    if not VERSION.fullmatch(latest):
+        try:
+            latest = latest_version(timeout=2.0)
+        except UserError:
+            latest = __version__   # offline: ask again tomorrow, not at every command
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(latest + "\n", encoding="utf-8")
+        except OSError:
+            pass
+    if version_tuple(latest) > version_tuple(__version__):
+        print(f"filo {latest} is available (this is {__version__}): run `filo upgrade`", file=sys.stderr)
+
+
 def scope_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--scope", "--project", help="project path or shared keyword; defaults to the current directory")
 
@@ -1090,6 +1214,7 @@ def command_parser() -> argparse.ArgumentParser:
             "  filo send --to claude --from codex --message 'review this'\n"
             "  filo send --to codex --from claude --stdin < message.txt\n"
             "  filo status ID                    was a message delivered?\n"
+            "  filo upgrade --check              is there a newer release?\n"
             "\nThe default scope is the current directory. Set FILO_DIR to change the local runtime root."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1131,6 +1256,10 @@ def command_parser() -> argparse.ArgumentParser:
     rename_parser.add_argument("old", help="its current name")
     rename_parser.add_argument("new", help="the new name")
 
+    upgrade_parser = sub.add_parser("upgrade", help="install the newest release, if this filo came from get.sh")
+    upgrade_parser.add_argument("--check", action="store_true", help="only say whether a newer release exists")
+    upgrade_parser.add_argument("-y", "--yes", action="store_true", help="do not ask before upgrading")
+
     who_parser = sub.add_parser("who", help="list participants")
     scope_argument(who_parser)
     who_parser.add_argument("--json", action="store_true", help="emit machine-readable output")
@@ -1164,6 +1293,7 @@ def who_command(args: argparse.Namespace, scope: str) -> int:
     print_rows(participants, f"connected to {args.scope or Path.cwd()}:")
     for row in registered:
         print(f"  {row.name}  {row.client} session={row.session}  (registered)")
+    update_notice()
     return 0
 
 
@@ -1203,6 +1333,8 @@ def main(argv: list[str] | None = None) -> int:
             return leave(args)
         if args.command == "rename":
             return rename(args)
+        if args.command == "upgrade":
+            return upgrade_command(args)
         scope = canonical_scope(args.scope)
         if args.command == "who":
             return who_command(args, scope)

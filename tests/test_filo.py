@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.server
 import importlib.util
 import json
 import os
@@ -25,6 +26,7 @@ if sys.platform == "darwin":
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "filo.py"
+RELEASE_MARKER = ".filo-release"
 
 
 class MessagePassingTests(unittest.TestCase):
@@ -1277,6 +1279,202 @@ class GetScriptTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         self.assertIn("@VERSION@", workflow)
         self.assertIn("@SHA256@", workflow)
+
+
+class ReleaseServer:
+    """A stand-in for github.com/Galfurian/filo/releases on 127.0.0.1."""
+
+    def __init__(self, latest: str, scripts: dict[str, str]) -> None:
+        self.latest = latest
+        self.scripts = scripts
+        self.hits: list[str] = []
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def answer(self, send_body: bool) -> None:
+                outer.hits.append(self.path)
+                if self.path == "/releases/latest":
+                    self.send_response(302)
+                    self.send_header("Location", f"/releases/tag/v{outer.latest}")
+                    self.end_headers()
+                    return
+                match = re.fullmatch(r"/releases/download/v([0-9.]+)/get\.sh", self.path)
+                body = b"release page"
+                if match is not None:
+                    if match.group(1) not in outer.scripts:
+                        self.send_error(404)
+                        return
+                    body = outer.scripts[match.group(1)].encode("utf-8")
+                elif not self.path.startswith("/releases/tag/"):
+                    self.send_error(404)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                if send_body:
+                    self.wfile.write(body)
+
+            def do_GET(self) -> None:
+                self.answer(True)
+
+            def do_HEAD(self) -> None:
+                self.answer(False)
+
+            def log_message(self, format: str, *args: Any) -> None:
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.server.server_address[1]}/releases"
+
+    def close(self) -> None:
+        if self.thread.is_alive():
+            self.server.shutdown()
+            self.server.server_close()
+            self.thread.join()
+
+
+class UpgradeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.base = tempfile.TemporaryDirectory()
+        self.root = Path(self.base.name)
+        self.release = self.root / "release"
+        self.release.mkdir()
+        self.tree = self.root / "tree"
+        shutil.copytree(ROOT, self.tree, ignore=shutil.ignore_patterns(".git", "__pycache__", "tests"))
+        self.stamped: dict[str, str] = {}
+        for version in ("9.9.8", "9.9.9"):
+            package = self.root / f"filo-{version}"
+            shutil.copytree(self.tree, package)
+            archive = self.release / f"filo-{version}.tar.gz"
+            subprocess.run(["tar", "-czf", str(archive), "-C", str(self.root), package.name], check=True)
+            sha = hashlib.sha256(archive.read_bytes()).hexdigest()
+            text = (ROOT / "get.sh").read_text(encoding="utf-8")
+            self.stamped[version] = text.replace('version="@VERSION@"', f'version="{version}"').replace(
+                'sha256="@SHA256@"', f'sha256="{sha}"')
+        (self.root / "home").mkdir()
+        self.home, self.bin = self.root / "data" / "filo", self.root / "bin"
+        self.server = ReleaseServer("9.9.9", self.stamped)
+        self.addCleanup(self.server.close)
+        self.addCleanup(self.base.cleanup)
+        self.environment = {
+            **os.environ,
+            "HOME": str(self.root / "home"),
+            "XDG_CACHE_HOME": str(self.root / "cache"),
+            "FILO_DIR": str(self.root / "runtime"),
+            "FILO_HOME": str(self.home),
+            "FILO_RELEASE_URL": f"file://{self.release}",
+            "FILO_RELEASES_URL": self.server.url,
+            "FILO_BIN_DIR": str(self.bin),
+            "FILO_CLAUDE_SKILLS": str(self.root / "claude" / "skills"),
+            "FILO_AGENTS_SKILLS": str(self.root / "agents" / "skills"),
+            "FILO_AGY_SKILLS": str(self.root / "agy" / "skills"),
+            "FILO_OPENCODE_DIR": str(self.root / "opencode"),
+        }
+        self.environment.pop("FILO_CHECK_UPDATES", None)
+
+    def install_old_release(self) -> None:
+        script = self.root / "get-old.sh"
+        script.write_text(self.stamped["9.9.8"], encoding="utf-8")
+        result = subprocess.run(["sh", str(script)], env=self.environment, text=True, capture_output=True,
+                                check=False, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("version=9.9.8", (self.home / RELEASE_MARKER).read_text(encoding="utf-8"))
+
+    def filo(self, *args: str, command: Path | None = None, env: dict[str, str] | None = None,
+             stdin: int | None = subprocess.DEVNULL) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([str(command or self.bin / "filo"), *args], env=env or self.environment,
+                              text=True, capture_output=True, check=False, timeout=60, stdin=stdin)
+
+    def test_upgrade_installs_the_newest_release_through_the_link_the_installer_made(self) -> None:
+        self.install_old_release()
+        checked = self.filo("upgrade", "--check")
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertIn("9.9.9 is available", checked.stdout)
+        self.assertIn("version=9.9.8", (self.home / RELEASE_MARKER).read_text(encoding="utf-8"))
+        result = self.filo("upgrade", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Dry run: nothing was changed", result.stdout)
+        self.assertIn("version=9.9.9", (self.home / RELEASE_MARKER).read_text(encoding="utf-8"))
+        self.assertEqual(os.readlink(self.bin / "filo"), str(self.home / "filo.py"))
+        self.assertEqual([path.name for path in self.home.parent.iterdir()], ["filo"])
+
+    def test_upgrade_does_not_go_ahead_without_a_terminal_or_an_answer(self) -> None:
+        self.install_old_release()
+        result = self.filo("upgrade")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("--yes", result.stderr)
+        self.assertIn("version=9.9.8", (self.home / RELEASE_MARKER).read_text(encoding="utf-8"))
+
+    def test_there_is_nothing_to_do_when_this_is_the_newest_release(self) -> None:
+        self.server.latest = self.version()
+        result = self.filo("upgrade", command=SCRIPT)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("is the latest version", result.stdout)
+        self.assertEqual(self.server.hits.count("/releases/latest"), 1)
+
+    def test_a_get_script_stamped_for_another_version_is_not_run(self) -> None:
+        self.install_old_release()
+        self.server.scripts["9.9.9"] = self.stamped["9.9.8"]
+        result = self.filo("upgrade", "--yes")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not stamped for 9.9.9", result.stderr)
+        self.assertIn("version=9.9.8", (self.home / RELEASE_MARKER).read_text(encoding="utf-8"))
+
+    def test_a_checkout_is_pointed_to_git_and_a_stray_copy_is_refused(self) -> None:
+        (self.tree / ".git").mkdir()
+        result = self.filo("upgrade", command=self.tree / "filo.py")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("git -C", result.stdout)
+        shutil.rmtree(self.tree / ".git")
+        stray = self.filo("upgrade", command=self.tree / "filo.py")
+        self.assertEqual(stray.returncode, 1)
+        self.assertIn("not installed by get.sh", stray.stderr)
+
+    def test_a_releases_address_that_is_not_https_is_refused(self) -> None:
+        self.environment["FILO_RELEASES_URL"] = "http://example.invalid/releases"
+        result = self.filo("upgrade", "--check", command=SCRIPT)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("must be an https:// URL", result.stderr)
+
+    def test_an_unreachable_server_is_an_error_for_upgrade_and_silent_for_the_notice(self) -> None:
+        self.server.close()
+        result = self.filo("upgrade", "--check", command=SCRIPT)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("could not fetch", result.stderr)
+        self.environment["FILO_CHECK_UPDATES"] = "1"
+        who = self.filo("who", "--scope", "x", command=SCRIPT)
+        self.assertEqual(who.returncode, 0, who.stderr)
+        self.assertNotIn("available", who.stderr)
+        cached = (self.root / "cache" / "filo" / "latest-version").read_text(encoding="utf-8").strip()
+        self.assertEqual(cached, self.version())
+
+    def version(self) -> str:
+        match = re.search(r'(?m)^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        assert match is not None
+        return match.group(1)
+
+    def test_the_notice_is_opt_in_once_a_day_and_never_in_json(self) -> None:
+        quiet = self.filo("who", "--scope", "x", command=SCRIPT)
+        self.assertEqual((quiet.returncode, quiet.stderr, self.server.hits), (0, "", []))
+        self.environment["FILO_CHECK_UPDATES"] = "1"
+        first = self.filo("who", "--scope", "x", command=SCRIPT)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertIn("filo 9.9.9 is available", first.stderr)
+        self.assertIn("filo upgrade", first.stderr)
+        self.assertEqual(self.server.hits.count("/releases/latest"), 1)
+        again = self.filo("who", "--scope", "x", command=SCRIPT)
+        self.assertIn("filo 9.9.9 is available", again.stderr)
+        as_json = self.filo("who", "--scope", "x", "--json", command=SCRIPT)
+        self.assertEqual(as_json.stderr, "")
+        self.assertEqual(self.server.hits.count("/releases/latest"), 1)
+
+    def test_the_marker_name_is_the_one_get_sh_writes(self) -> None:
+        self.assertIn(f"marker={RELEASE_MARKER}\n", (ROOT / "get.sh").read_text(encoding="utf-8"))
 
 
 class PeerCheckTests(unittest.TestCase):

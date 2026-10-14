@@ -125,5 +125,8 @@ file for the listener; that is normal and needs no approval.
   inside one scope. If the sender is not in `filo who`, tell the user; do
   not guess another `--scope` and do not write to some other agent that happens
   to carry the same name.
+- If `filo who` says a newer version of filo is available, tell the user and leave it
+  there. `filo upgrade` runs a script downloaded from the network: the user runs it, you
+  do not.
 - Keep messages short and self-contained: say what you need or what you found,
   with file paths. Use `--stdin` for anything long or multi-line.
