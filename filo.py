@@ -44,6 +44,9 @@ SOCKET_TIMEOUT = 1.0
 SOCKET_PATH_LIMIT = 103 if sys.platform != "linux" else 107
 SERVER_TIMEOUT = 2.0
 MAX_FRAME = 4 * 1024 * 1024
+# A file is written with every non-ASCII character escaped, which takes up to six bytes for each byte
+# of a frame, so a message that fit in a frame has to fit in the file that keeps it.
+MAX_FILE = 6 * MAX_FRAME + 64 * 1024
 NAME_ALPHABET = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
 SESSION_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z._-]{5,127}")
 MESSAGE_ID = re.compile(r"[0-9a-f]{10,20}-[0-9a-f]{6}")
@@ -321,7 +324,7 @@ def read_object(path: Path) -> JsonObject:
             raise ProtocolError("not a regular file")
         if info.st_uid != os.getuid():
             raise ProtocolError("file is not owned by this user")
-        if info.st_size > MAX_FRAME:
+        if info.st_size > MAX_FILE:
             raise ProtocolError("file is too large")
         return as_object(parse_json(handle.read().decode("utf-8")), "file")
 

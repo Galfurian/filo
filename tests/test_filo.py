@@ -2017,3 +2017,29 @@ class PeerCheckTests(unittest.TestCase):
 
     def test_a_peer_of_the_same_user_is_answered(self) -> None:
         self.assertEqual(self.answer(os.getuid())["ok"], True)
+
+
+class SizeTests(RuntimeCase):
+    """A message that filo accepts has to be one it can also keep and deliver again."""
+
+    BODY = "漢" * 1_000_000    # 3 MB as UTF-8, 6 MB once escaped for a file
+
+    def test_a_big_non_ascii_message_can_be_shown_after_it_is_received(self) -> None:
+        _, lines, _ = self.listen("rx")
+        self.assertEqual(self.msg("send", "--to", "rx", "--from", "tx", "--stdin", stdin=self.BODY).returncode, 0)
+        event = lines.message(timeout=20)
+        assert event is not None
+        shown = self.msg("show", str(event["id"]))
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assertEqual(shown.stdout, self.BODY + "\n")
+
+    def test_a_big_non_ascii_message_that_waited_is_delivered(self) -> None:
+        process, _, _ = self.listen("rx")
+        process.terminate()
+        process.wait(timeout=5)
+        sent = self.msg("send", "--to", "rx", "--from", "tx", "--stdin", stdin=self.BODY)
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        _, lines, _ = self.listen("rx")
+        event = lines.message(timeout=20)
+        assert event is not None
+        self.assertEqual(event["message"], self.BODY)
