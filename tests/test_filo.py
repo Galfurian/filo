@@ -568,6 +568,37 @@ class OfflineQueueTests(RuntimeCase):
         self.assertIn("not connected", failed.stderr)
         self.assertNotEqual(self.msg("status", "../../etc/passwd").returncode, 0)
 
+    def test_a_spooled_message_stays_until_it_has_been_delivered(self) -> None:
+        filo = load_filo()
+        scope = "keyword:spool-order"
+        with mock.patch.dict(os.environ, {"FILO_DIR": str(self.runtime)}):
+            filo.spool_message(scope, "claude", "codex", "wait for me", filo.new_message_id())
+            [path] = (filo.scope_directory(scope) / "spool" / "claude").glob("*.msg")
+
+            def fail(_message: dict[str, object]) -> None:
+                raise BrokenPipeError("the session's output is gone")
+
+            with self.assertRaises(BrokenPipeError):
+                filo.drain_spool(scope, "claude", fail)
+            self.assertTrue(path.exists(), "the message was deleted before it was delivered")
+            delivered: list[dict[str, object]] = []
+            filo.drain_spool(scope, "claude", delivered.append)
+            self.assertEqual([item["message"] for item in delivered], ["wait for me"])
+            self.assertFalse(path.exists())
+            self.assertIn("delivered to claude", filo.message_status(scope, path.stem))
+
+    def test_a_spooled_message_that_cannot_be_shown_is_dropped_and_not_tried_for_ever(self) -> None:
+        filo = load_filo()
+        scope = "keyword:spool-poison"
+
+        def refuse(_message: dict[str, object]) -> None:
+            "\udcff".encode("utf-8")    # what printing a lone surrogate does: UnicodeEncodeError
+
+        with mock.patch.dict(os.environ, {"FILO_DIR": str(self.runtime)}):
+            filo.spool_message(scope, "claude", "codex", "caf\udce9", filo.new_message_id())
+            filo.drain_spool(scope, "claude", refuse)
+            self.assertEqual(list((filo.scope_directory(scope) / "spool" / "claude").glob("*.msg")), [])
+
 
 class HardeningTests(RuntimeCase):
     def test_who_keeps_a_listener_that_is_only_slow(self) -> None:
