@@ -46,6 +46,7 @@ MAX_FRAME = 4 * 1024 * 1024
 NAME_ALPHABET = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
 SESSION_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z._-]{5,127}")
 MESSAGE_ID = re.compile(r"[0-9a-f]{10,20}-[0-9a-f]{6}")
+PLACEHOLDER = re.compile(r"\{(session|message|scope)\}")
 RELEASES_URL = "https://github.com/Galfurian/filo/releases"
 RELEASE_TAG = re.compile(r"/releases/tag/v(\d+\.\d+\.\d+)$")
 STAMPED_VERSION = re.compile(r'(?m)^version="(\d+\.\d+\.\d+)"$')
@@ -89,16 +90,19 @@ JsonObject = dict[str, Any]
 # --- names, scopes and runtime files -----------------------------------------
 
 def valid_name(value: str, label: str = "name") -> str:
-    if not value or any(char not in NAME_ALPHABET for char in value):
-        raise UserError(f"{label}: use only letters, digits, '.', '_' or '-'")
+    if not value or any(char not in NAME_ALPHABET for char in value) or value in (".", ".."):
+        raise UserError(f"{label}: use only letters, digits, '.', '_' or '-', and not '.' or '..'")
     return value
 
 
 def canonical_scope(raw: str | None) -> str:
     value = raw or str(Path.cwd())
-    path = Path(value).expanduser()
-    if path.exists():
-        return f"path:{path.resolve()}"
+    try:
+        path = Path(value).expanduser()
+        if path.exists():
+            return f"path:{path.resolve()}"
+    except RuntimeError:    # "~someone" for a user that does not exist: not a directory, so a keyword
+        pass
     return f"keyword:{value}"
 
 
@@ -123,8 +127,12 @@ def current_origin() -> str | None:
 def is_foreign(scope: str, origin: object) -> bool:
     """Whether a message that says it was sent from ``origin`` comes from outside this directory scope."""
     directory = scope_path(scope)
-    return isinstance(origin, str) and bool(origin) and directory is not None \
-        and os.path.realpath(origin) != directory
+    if not isinstance(origin, str) or not origin or directory is None:
+        return False
+    try:
+        return os.path.realpath(origin) != directory
+    except (OSError, ValueError):    # a path that cannot be looked at is not this directory
+        return True
 
 
 def secure_directory(path: Path) -> Path:
@@ -227,6 +235,14 @@ def write_metadata(path: Path, data: JsonObject, exclusive: bool = False) -> boo
         unlink_if_present(temporary)
 
 
+def parse_json(data: str | bytes) -> Any:
+    """``json.loads`` that raises only ValueError: nesting too deep for the parser is a ProtocolError."""
+    try:
+        return json.loads(data)
+    except RecursionError:
+        raise ProtocolError("JSON nested too deeply") from None
+
+
 def as_object(value: Any, what: str) -> JsonObject:
     """``value`` as a JSON object, or ProtocolError."""
     if not isinstance(value, dict):
@@ -249,7 +265,7 @@ def read_object(path: Path) -> JsonObject:
             raise ProtocolError("file is not owned by this user")
         if info.st_size > MAX_FRAME:
             raise ProtocolError("file is too large")
-        return as_object(json.loads(handle.read().decode("utf-8")), "file")
+        return as_object(parse_json(handle.read().decode("utf-8")), "file")
 
 
 def int_field(data: JsonObject, key: str, default: int | None = None) -> int:
@@ -263,7 +279,10 @@ def int_field(data: JsonObject, key: str, default: int | None = None) -> int:
         if default is None:
             raise KeyError(key)
         return default
-    return int(value)
+    try:
+        return int(value)
+    except OverflowError:    # infinity
+        raise ValueError(f"{key} is not a finite number") from None
 
 
 def pid_alive(pid: int) -> bool:
@@ -291,7 +310,7 @@ def read_frame(connection: socket.socket) -> JsonObject:
         data.extend(chunk)
         newline = data.find(b"\n")
         if newline >= 0:
-            return as_object(json.loads(bytes(data[:newline])), "message")
+            return as_object(parse_json(bytes(data[:newline])), "message")
     if len(data) >= MAX_FRAME:
         raise ProtocolError("message is too large")
     raise ProtocolError("connection closed before a complete message")
@@ -413,7 +432,7 @@ def reply_hint(sender: str, me: str, origin: str | None = None) -> str:
     """Command a recipient can run to answer ``sender``; ``origin`` is where it has to be sent when
     the sender is in another directory."""
     where = f" --scope {shlex.quote(origin)}" if origin else ""
-    return f'filo send --to {sender} --from {me}{where} --message "..."'
+    return f'filo send --to {shlex.quote(sender)} --from {shlex.quote(me)}{where} --message "..."'
 
 
 def compose_text(sender: str, recipient: str, body: str, origin: str | None = None,
@@ -462,9 +481,9 @@ def preview_event(event: JsonObject, limit: int) -> JsonObject:
     def size(candidate: JsonObject) -> int:
         return len(json.dumps(candidate, ensure_ascii=False))
 
-    if size(event) <= limit:
-        return event
     body = str(event["message"])
+    if size(event) <= limit or not body:    # nothing to cut from an empty body
+        return event
     head = {key: value for key, value in event.items() if key != "message"}
 
     def cut(length: int) -> JsonObject:
@@ -696,8 +715,10 @@ def command_adapter(client: str, spec: Any) -> Adapter:
         raise UserError(f"adapters: {client!r}: 'capture_env' must be a non-empty list of strings") from None
 
     def deliver(session: str, text: str, directory: str, env: dict[str, str]) -> str:
-        run_delivery([part.replace("{session}", session).replace("{message}", text).replace("{scope}", directory)
-                      for part in template], client, env)
+        values = {"session": session, "message": text, "scope": directory}
+        # In one pass, so that a message that contains "{scope}" reaches the command as written.
+        run_delivery([PLACEHOLDER.sub(lambda found: values[found.group(1)], part) for part in template],
+                     client, env)
         return f"{client} session {session}"
 
     return Adapter(client=client, deliver=deliver, id_env=id_env, process=process, capture_env=tuple(capture))
@@ -711,7 +732,7 @@ def adapters() -> dict[str, Adapter]:
                             process="agy", capture_env=AGY_ENV, alive=agy_alive)}
     path = Path(os.environ.get("FILO_ADAPTERS", "~/.config/filo/adapters.json")).expanduser()
     try:
-        configured = json.loads(path.read_text(encoding="utf-8"))
+        configured = parse_json(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return found
     except (OSError, ValueError) as exc:
