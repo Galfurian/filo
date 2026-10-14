@@ -604,6 +604,24 @@ class HardeningTests(RuntimeCase):
         assert message is not None
         self.assertEqual(message["peer_pid"], sender.pid)
 
+    def test_an_id_that_is_not_a_message_id_is_never_part_of_a_path(self) -> None:
+        _, lines, _ = self.listen("claude")
+        [sock_file] = self.runtime.glob("*/claude.sock")
+        for index, identifier in enumerate(("../../escape", "a/b", "x" * 300)):
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.settimeout(5)
+            client.connect(str(sock_file))
+            client.sendall(json.dumps({"op": "message", "id": identifier, "from": "raw",
+                                       "message": f"hello {index}"}).encode() + b"\n")
+            self.assertEqual(json.loads(client.makefile().readline()), {"ok": True})
+            client.close()
+            event = lines.message()
+            assert event is not None
+            self.assertEqual(event["message"], f"hello {index}")
+        self.assertEqual(sorted(path.name for path in self.runtime.parent.glob("escape*")), [])
+        self.assertEqual(sorted(path.name for path in self.runtime.glob("escape*")), [])
+        self.assertEqual(list(self.runtime.glob("*/acks/*")), [])
+
 
 class SessionTests(CodexQueueRouteTests):
     """Several Codex sessions in one directory are told apart by name."""

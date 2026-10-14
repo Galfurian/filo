@@ -675,7 +675,9 @@ def drain_spool(scope: str, name: str, deliver: Callable[[JsonObject], None]) ->
         if time.time_ns() - int_field(message, "created_ns", 0) > spool_ttl() * 1_000_000_000:
             continue
         deliver(message)
-        write_ack(scope, str(message.get("id") or path.stem), name, "delivered from the spool")
+        identifier = message.get("id") or path.stem
+        if isinstance(identifier, str) and MESSAGE_ID.fullmatch(identifier):
+            write_ack(scope, identifier, name, "delivered from the spool")
     acks = scope_directory(scope) / "acks"
     for old in acks.glob("*.json"):
         try:
@@ -1280,8 +1282,9 @@ class Listener:
             return {"ok": True, "name": self.name, "pid": os.getpid()}
         if operation == "message":
             self.receive(message, peer_pid)
-            if message.get("id"):
-                write_ack(self.scope, str(message["id"]), self.name, "delivered directly")
+            identifier = message.get("id")    # a name of a file: only what filo makes is one
+            if isinstance(identifier, str) and MESSAGE_ID.fullmatch(identifier):
+                write_ack(self.scope, identifier, self.name, "delivered directly")
             return {"ok": True}
         if operation == "quit":
             self.stopping = True
