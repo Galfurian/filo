@@ -2148,6 +2148,17 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("must be an https:// URL", result.stderr)
 
+    def test_an_address_is_judged_by_its_host_and_not_by_how_it_begins(self) -> None:
+        secure = load_filo().secure_url
+        for good in ("https://github.com/Galfurian/filo/releases", "http://127.0.0.1:8000/x", "http://localhost:9/x"):
+            self.assertTrue(secure(good), good)
+        for bad in ("http://example.invalid/x", "http://127.0.0.1/x", "ftp://127.0.0.1:21/x",
+                    "http://127.0.0.1:80@evil.example/x", "http://localhost:1@evil.example/",
+                    "http://127.0.0.1:@evil.example/", "https://github.com@evil.example/x",
+                    "http://127.0.0.1.evil.example:80/x", "http://[::1]:80/x", "https:///x", "http://localhost:99999/x",
+                    "https://", ""):
+            self.assertFalse(secure(bad), bad)
+
     def test_an_unreachable_server_is_an_error_for_upgrade_and_silent_for_the_notice(self) -> None:
         self.server.close()
         result = self.filo("upgrade", "--check", command=SCRIPT)

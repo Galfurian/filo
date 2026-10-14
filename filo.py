@@ -31,6 +31,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
@@ -1447,7 +1448,19 @@ def releases_url() -> str:
 
 
 def secure_url(url: str) -> bool:
-    return url.startswith(("https://", "http://127.0.0.1:", "http://localhost:"))
+    """Whether ``url`` is https, or plain http to this machine on a port (for a mirror and the tests).
+    It is the host that counts, not how the address begins: ``http://127.0.0.1:80@example.org/`` is
+    example.org, and an address that names a user is never accepted."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        port = parts.port
+    except ValueError:    # a port that is not a number, an unclosed bracket
+        return False
+    if parts.username is not None or parts.password is not None or not parts.hostname:
+        return False
+    if parts.scheme == "https":
+        return True
+    return parts.scheme == "http" and parts.hostname in ("127.0.0.1", "localhost") and port is not None
 
 
 def version_tuple(text: str) -> tuple[int, ...]:
