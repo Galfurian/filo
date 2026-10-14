@@ -232,6 +232,8 @@ travel with the skill link, so they need no install of their own.
 - **agy** must run `filo register` from inside its own session, because it copies the
   session's address and token. **OpenCode** needs a restart after `./install.sh`, so that
   it loads the plugin.
+- **`the message is N bytes and filo carries … at most`**: a message is limited to about 4 MB
+  of text. Put a longer one in a file and send its name.
 - **`the socket path is too long`**: a Unix socket path has a limit (103 bytes on macOS,
   107 on Linux). Set `FILO_DIR` to a shorter directory.
 - In a bug report, give `filo --version` and the versions of the clients.

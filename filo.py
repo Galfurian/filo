@@ -47,6 +47,7 @@ MAX_FRAME = 4 * 1024 * 1024
 # A file is written with every non-ASCII character escaped, which takes up to six bytes for each byte
 # of a frame, so a message that fit in a frame has to fit in the file that keeps it.
 MAX_FILE = 6 * MAX_FRAME + 64 * 1024
+MAX_BODY = MAX_FRAME - 64 * 1024    # the text of a message: the rest of the frame is for its other fields
 NAME_ALPHABET = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
 SESSION_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z._-]{5,127}")
 MESSAGE_ID = re.compile(r"[0-9a-f]{10,20}-[0-9a-f]{6}")
@@ -1716,6 +1717,10 @@ def message_body(args: argparse.Namespace) -> str:
         body = args.message if args.message is not None else (args.text or "")
     if not body:
         raise UserError("send: refusing an empty message")
+    size = len(json.dumps(body, ensure_ascii=False).encode("utf-8", "surrogatepass"))
+    if size > MAX_BODY:
+        raise UserError(f"send: the message is {size:,} bytes and filo carries {MAX_BODY:,} at most; "
+                        f"send a file name instead, or split it")
     return str(body)
 
 

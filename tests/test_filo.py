@@ -2043,3 +2043,13 @@ class SizeTests(RuntimeCase):
         event = lines.message(timeout=20)
         assert event is not None
         self.assertEqual(event["message"], self.BODY)
+
+    def test_a_message_too_big_to_carry_is_refused_and_nothing_is_queued(self) -> None:
+        _, lines, _ = self.listen("rx")
+        sent = self.msg("send", "--to", "rx", "--from", "tx", "--stdin", stdin="x" * (4 * 1024 * 1024))
+        self.assertEqual(sent.returncode, 1)
+        self.assertIn("at most", sent.stderr)
+        self.assertEqual(list(self.runtime.glob("*/spool/*/*.msg")), [])
+        self.assertIsNone(lines.message(timeout=1))
+        fits = self.msg("send", "--to", "rx", "--from", "tx", "--stdin", stdin="x" * (4 * 1024 * 1024 - 100_000))
+        self.assertEqual(fits.returncode, 0, fits.stderr)
