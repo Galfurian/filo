@@ -48,6 +48,7 @@ MAX_FRAME = 4 * 1024 * 1024
 # of a frame, so a message that fit in a frame has to fit in the file that keeps it.
 MAX_FILE = 6 * MAX_FRAME + 64 * 1024
 MAX_BODY = MAX_FRAME - 64 * 1024    # the text of a message: the rest of the frame is for its other fields
+NAME_LIMIT = 64    # a file name made of it, with its suffixes, must fit in a socket path and a file system
 NAME_ALPHABET = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
 SESSION_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z._-]{5,127}")
 MESSAGE_ID = re.compile(r"[0-9a-f]{10,20}-[0-9a-f]{6}")
@@ -99,16 +100,21 @@ JsonObject = dict[str, Any]
 def valid_name(value: str, label: str = "name") -> str:
     if not value or any(char not in NAME_ALPHABET for char in value) or value in (".", ".."):
         raise UserError(f"{label}: use only letters, digits, '.', '_' or '-', and not '.' or '..'")
+    if len(value) > NAME_LIMIT:
+        raise UserError(f"{label}: at most {NAME_LIMIT} characters")
     return value
 
 
 def canonical_scope(raw: str | None) -> str:
-    value = raw or str(Path.cwd())
+    try:
+        value = raw or str(Path.cwd())
+    except OSError:
+        raise UserError("the current directory no longer exists: change to another or pass --scope") from None
     try:
         path = Path(value).expanduser()
         if path.exists():
             return f"path:{path.resolve()}"
-    except RuntimeError:    # "~someone" for a user that does not exist: not a directory, so a keyword
+    except (RuntimeError, OSError):    # "~someone" who is not a user, or a name too long to look up: a keyword
         pass
     return f"keyword:{value}"
 
@@ -1785,6 +1791,9 @@ def main(argv: list[str] | None = None) -> int:
         return send_command(args, scope)
     except UserError as exc:
         print(exc, file=sys.stderr)
+        return 1
+    except OSError as exc:    # the file system or a socket said no: that is a message, not a traceback
+        print(f"{APP}: {exc.strerror or exc}" + (f": {exc.filename}" if exc.filename else ""), file=sys.stderr)
         return 1
 
 

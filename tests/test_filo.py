@@ -478,6 +478,19 @@ class NamingTests(RuntimeCase):
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("already connected", refused.stderr)
 
+    def test_a_name_too_long_for_a_file_is_refused_with_a_message(self) -> None:
+        name = "a" * 300
+        for command in (("send", "--to", name, "--message", "hi"),
+                        ("send", "--to", "x", "--from", name, "--message", "hi"),
+                        ("register", "--as", "codex", "--session", "abcdefgh", "--name", name),
+                        ("join", "--as", name, "--json"),
+                        ("leave", "--name", name)):
+            failed = self.msg(*command)
+            self.assertEqual(failed.returncode, 1, (command, failed.stderr))
+            self.assertNotIn("Traceback", failed.stderr)
+            self.assertIn("at most", failed.stderr)
+        self.assertEqual(self.msg("join", "--as", "a" * 40, "--detach", "--parent", str(os.getpid())).returncode, 0)
+
 
 class ScopeTests(RuntimeCase):
     def test_sessions_in_different_directories_do_not_see_each_other(self) -> None:
@@ -493,6 +506,20 @@ class ScopeTests(RuntimeCase):
         self.assertIsNone(lines_there.message(0.7))
         who_there = json.loads(self.msg("who", "--json", scope=other).stdout)
         self.assertEqual([row["name"] for row in who_there["participants"]], ["claude"])
+
+    def test_a_directory_that_is_gone_or_a_scope_that_is_absurd_gives_a_message_or_a_keyword(self) -> None:
+        gone = self.root / "gone"
+        gone.mkdir()
+        code = ("import os, runpy, sys\nos.chdir(sys.argv[1])\nos.rmdir(sys.argv[1])\n"
+                f"sys.argv = ['filo', 'who']\nrunpy.run_path({str(SCRIPT)!r}, run_name='__main__')")
+        failed = subprocess.run([sys.executable, "-c", code, str(gone)], env=self.environment,
+                                text=True, capture_output=True, check=False)
+        self.assertEqual(failed.returncode, 1, failed.stderr)
+        self.assertNotIn("Traceback", failed.stderr)
+        self.assertIn("--scope", failed.stderr)
+        long_scope = "k" * 5000    # not a path the system can look at, so a keyword
+        listed = self.msg("who", "--json", "--scope", long_scope)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
 
 
 class OfflineQueueTests(RuntimeCase):
