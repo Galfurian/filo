@@ -14,6 +14,7 @@ scope (by default the current directory) holds the participants:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -1184,21 +1185,42 @@ def deliver_message(scope: str, recipient: str, sender: str, body: str, message_
 
 # --- the listener ------------------------------------------------------------
 
-def claim_listener_name(scope: str, base: str, exact: bool) -> tuple[str, socket.socket]:
-    """Bind a socket under ``base``, or ``base-2``... if that name is in use."""
+def lock_name(scope: str, name: str) -> int | None:
+    """Hold ``name`` for as long as the descriptor that this returns stays open, or None if another
+    process holds it. The system takes the lock back when its process ends, however it ends, so it needs no
+    probing and cannot be left behind; and only one process can take it, so two that ask for a name at the
+    same moment do not both get it."""
+    descriptor = os.open(scope_directory(scope) / f"{valid_name(name)}.lock",
+                         os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(descriptor)
+        return None
+    return descriptor
+
+
+def claim_listener_name(scope: str, base: str, exact: bool) -> tuple[str, socket.socket, int]:
+    """Bind a socket under ``base``, or ``base-2``... if that name is in use. The third thing returned is the
+    descriptor that holds the name: the listener keeps it open for as long as it lives."""
     for number in range(1, 100):
         name = base if number == 1 else f"{base}-{number}"
         socket_file = socket_path(scope, name)
         if len(os.fsencode(str(socket_file))) > SOCKET_PATH_LIMIT:
             raise UserError(f"the socket path is too long for this system ({SOCKET_PATH_LIMIT} bytes at most): "
                             f"{socket_file}; set FILO_DIR to a shorter directory")
+        held = lock_name(scope, name)
         metadata = metadata_path(scope, name)
-        in_use = (scope_directory(scope) / f"{name}.reg").exists() or (
+        # What the lock cannot know: a registration, and a listener of a filo that did not take one.
+        in_use = held is None or (scope_directory(scope) / f"{name}.reg").exists() or (
             metadata.exists() and listener_is_live(scope, name))
         if in_use:
+            if held is not None:
+                os.close(held)
             if exact:
                 raise UserError(f"participant {name!r} is already connected")
             continue
+        assert held is not None
         unlink_if_present(metadata)
         unlink_if_present(socket_file)
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -1206,8 +1228,9 @@ def claim_listener_name(scope: str, base: str, exact: bool) -> tuple[str, socket
             server.bind(str(socket_file))
         except OSError:
             server.close()
+            os.close(held)
             continue
-        return name, server
+        return name, server, held
     raise UserError(f"no free name left for {base!r}")
 
 
@@ -1215,7 +1238,9 @@ class Listener:
     """A participant that receives messages on its Unix socket and prints them."""
 
     def __init__(self, scope: str, name: str, server: socket.socket, as_json: bool,
-                 parent: int | None = None, preview: int | None = None, detached: bool = False) -> None:
+                 parent: int | None = None, preview: int | None = None, detached: bool = False,
+                 lock: int | None = None) -> None:
+        self.lock = lock             # holds the name; closed, and so given back, when the listener leaves
         self.detached = detached     # nobody reads its output: `filo watch` reads what it received
         self.stopping = False
         self.preview = preview
@@ -1319,6 +1344,8 @@ class Listener:
         self.server.close()
         unlink_if_present(self.socket_file)
         unlink_if_present(self.metadata)
+        if self.lock is not None:
+            os.close(self.lock)
 
 
 def detach(listener: Listener, shown_scope: str, existing: list[Participant],
@@ -1339,6 +1366,8 @@ def detach(listener: Listener, shown_scope: str, existing: list[Participant],
             for descriptor in (0, 1, 2):
                 os.dup2(null, descriptor)
             keep = {listener.server.fileno(), ready_write}
+            if listener.lock is not None:
+                keep.add(listener.lock)
             for descriptor in range(3, 256):
                 if descriptor not in keep:
                     try:
@@ -1355,6 +1384,8 @@ def detach(listener: Listener, shown_scope: str, existing: list[Participant],
             os._exit(status)
     os.close(ready_write)
     listener.server.close()
+    if listener.lock is not None:
+        os.close(listener.lock)    # the new process has its own: the name stays held until it ends
     listener.closed = True    # the files belong to the new process now: this one must never remove them
     with os.fdopen(ready_read, "rb") as pipe:
         ready, _, _ = select.select([pipe], [], [], 10)
@@ -1386,8 +1417,8 @@ def join(args: argparse.Namespace) -> int:
     scope = canonical_scope(args.scope)
     existing = participant_rows(scope)
     registered = live_registrations(scope)    # before the socket exists: nothing here may leave one behind
-    name, server = claim_listener_name(scope, valid_name(args.name, "--as"), args.exact)
-    listener = Listener(scope, name, server, args.json, args.parent, args.preview, args.detach)
+    name, server, lock = claim_listener_name(scope, valid_name(args.name, "--as"), args.exact)
+    listener = Listener(scope, name, server, args.json, args.parent, args.preview, args.detach, lock)
 
     def stop(_signum: int, _frame: object) -> None:
         listener.close()
