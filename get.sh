@@ -109,7 +109,9 @@ install_filo() {
     stage="$home_dir.new.$$"
     mkdir "$stage"
     tar -xzf "$scratch/$archive" -C "$stage" --strip-components=1
-    [ -f "$stage/install.sh" ] && [ -x "$stage/filo.py" ] || die 'the archive does not look like filo'
+    if [ ! -f "$stage/install.sh" ] || [ ! -x "$stage/filo.py" ]; then
+        die 'the archive does not look like filo'
+    fi
     printf 'version=%s\nsha256=%s\n' "$version" "$sha256" > "$stage/$marker"
 
     if [ -d "$home_dir" ]; then

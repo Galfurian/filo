@@ -1202,7 +1202,7 @@ class GetScriptTests(unittest.TestCase):
         self.assertTrue((self.home / "filo.py").is_file())
         self.assertEqual((self.home / ".filo-release").read_text(encoding="utf-8"),
                          f"version=9.9.9\nsha256={self.sha}\n")
-        self.assertEqual((self.bin / "filo").resolve(), self.home / "filo.py")
+        self.assertEqual((self.bin / "filo").resolve(), (self.home / "filo.py").resolve())
         again = self.get()
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertIn("already linked", again.stdout)
