@@ -683,8 +683,10 @@ def drain_spool(scope: str, name: str, deliver: Callable[[JsonObject], None]) ->
         identifier = message.get("id") or path.stem
         if isinstance(identifier, str) and MESSAGE_ID.fullmatch(identifier):
             write_ack(scope, identifier, name, "delivered from the spool")
-    acks = scope_directory(scope) / "acks"
-    for old in acks.glob("*.json"):
+
+
+def prune_acks(scope: str) -> None:
+    for old in (scope_directory(scope) / "acks").glob("*.json"):
         try:
             if time.time() - old.stat().st_mtime > ACK_TTL:
                 unlink_if_present(old)
@@ -1254,6 +1256,7 @@ class Listener:
             drain_spool(self.scope, self.name, self.print_spooled)
             if time.monotonic() >= self.next_prune:
                 prune_inbox(self.scope)
+                prune_acks(self.scope)
                 self.next_prune = time.monotonic() + 60
             try:
                 connection, _ = self.server.accept()

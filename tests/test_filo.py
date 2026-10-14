@@ -1394,6 +1394,19 @@ class ShowTests(RuntimeCase):
             finally:
                 del os.environ["FILO_DIR"]
 
+    def test_old_acknowledgements_are_forgotten_by_the_listener_and_not_at_every_pass(self) -> None:
+        module = load_filo()
+        scope = "keyword:ack-pruning"
+        with mock.patch.dict(os.environ, {"FILO_DIR": str(self.runtime)}):
+            module.write_ack(scope, "18de6610f927c276-fe7820", "b", "delivered directly")
+            [ack] = (module.scope_directory(scope) / "acks").glob("*.json")
+            old = time.time() - module.ACK_TTL - 10
+            os.utime(ack, (old, old))
+            module.drain_spool(scope, "b", lambda _message: None)    # runs twice a second: not its job
+            self.assertTrue(ack.exists())
+            module.prune_acks(scope)
+            self.assertFalse(ack.exists())
+
     def test_a_preview_that_is_too_small_is_refused(self) -> None:
         result = self.msg("join", "--as", "x", "--json", "--preview", "10")
         self.assertEqual(result.returncode, 1)
