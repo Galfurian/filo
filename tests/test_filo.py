@@ -625,6 +625,41 @@ class HardeningTests(RuntimeCase):
         finally:
             silent.close()
 
+    def test_a_client_that_sends_a_byte_at_a_time_is_cut_off(self) -> None:
+        # The timeout of a read starts again with every byte, so a client that drips one every half
+        # second could hold the listener for as long as it liked: no spool, no check on its parent.
+        _, lines, _ = self.listen("claude")
+        [sock_file] = self.runtime.glob("*/claude.sock")
+        dripper = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        dripper.connect(str(sock_file))
+        stop = threading.Event()
+
+        def drip() -> None:
+            while not stop.is_set():
+                try:
+                    dripper.send(b" ")
+                except OSError:
+                    return
+                stop.wait(0.5)
+
+        thread = threading.Thread(target=drip, daemon=True)
+        thread.start()
+        try:
+            time.sleep(0.2)
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            probe.settimeout(5)
+            started = time.monotonic()
+            probe.connect(str(sock_file))
+            probe.sendall(b'{"op":"info"}\n')
+            self.assertEqual(json.loads(probe.makefile().readline())["name"], "claude")
+            self.assertLess(time.monotonic() - started, 4.0)
+            probe.close()
+        finally:
+            stop.set()
+            thread.join(timeout=2)
+            dripper.close()
+        self.assertIsNone(lines.message(0.2))
+
     def test_events_name_the_process_that_sent_them(self) -> None:
         _, lines, _ = self.listen("claude")
         sender = subprocess.Popen(
