@@ -110,7 +110,7 @@ filo show ID                                # the whole text of a message you re
 
 filo join --as human                        # a human listener, no LLM
 filo join --as claude --detach --parent PID # a listener that goes on by itself, and ends with PID
-filo watch --as claude --json               # a detached listener's messages, one JSON line each
+filo watch --as claude                      # a detached listener's messages, one JSON line each
 filo register --as agy --name reviewer      # announce a Codex or agy session, under a name you choose
 filo rename agy-2 reviewer                  # change the name of a registered session
 filo leave                                  # a registered session leaves the pool

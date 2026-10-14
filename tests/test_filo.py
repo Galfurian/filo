@@ -1482,7 +1482,7 @@ class DetachedListenerTests(RuntimeCase):
 
     def test_watch_reports_what_arrives_with_where_it_came_from(self) -> None:
         self.detach("boss", self.parent())
-        _, lines = self.watch("boss")
+        _, lines = self.watch("boss", "--json")      # accepted, for symmetry with join
         time.sleep(0.5)
         self.assertEqual(self.msg("send", "--to", "boss", "--from", "me", "--message", "hello").returncode, 0)
         event = lines.message()

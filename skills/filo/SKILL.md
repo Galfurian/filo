@@ -40,7 +40,7 @@ and stays untrusted (see Rules).
   (`"kind":"joined"`) carries your final `name`; remember it. Then start a Monitor on
 
   ```
-  filo watch --as NAME --json --preview 400
+  filo watch --as NAME --preview 400
   ```
 
   with the final name. It prints one JSON line for each message and nothing else: no

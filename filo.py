@@ -1453,7 +1453,7 @@ def command_parser() -> argparse.ArgumentParser:
             "  filo register --as agy --name reviewer   pick your own name\n"
             "  filo rename agy-2 reviewer\n"
             "  filo join --as claude --detach --parent $CLAUDE_PID    a listener that ends with its parent\n"
-            "  filo watch --as claude --json     its messages, until it ends; start it again at any time\n"
+            "  filo watch --as claude            its messages, until it ends; start it again at any time\n"
             "  filo leave                           take this registered session out of the pool\n"
             "  filo profiles                        the roles you can join as: /filo manager\n"
             "  filo profile manager                 print what a manager is told to do\n"
@@ -1534,6 +1534,8 @@ def command_parser() -> argparse.ArgumentParser:
         "watch", help="print the messages that a detached listener receives, as JSON lines, until it ends")
     scope_argument(watch_parser)
     watch_parser.add_argument("--as", dest="name", required=True, help="the name of the detached listener")
+    watch_parser.add_argument("--json", action="store_true",
+                              help="accepted for symmetry with join: watch always prints JSON lines")
     watch_parser.add_argument("--preview", type=int, metavar="N",
                               help=f"cut an event longer than N characters (at least {MIN_PREVIEW}) and say so")
 
