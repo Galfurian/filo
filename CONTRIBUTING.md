@@ -29,6 +29,12 @@ pyright
 shellcheck -s sh install.sh uninstall.sh get.sh scripts/common.sh
 ```
 
+`tests/test_properties.py` holds property-based tests (Hypothesis, one of the dev tools): they
+check what filo does for *any* input, and the module is skipped when Hypothesis is not
+installed. The default run is deterministic. To look for new failures run
+`HYPOTHESIS_PROFILE=explore python3 -m unittest tests.test_properties` (a couple of minutes), and
+put what it finds in an `@example` of the test that found it, with the fix.
+
 The tests need no client installed: they use stand-ins. The OpenCode plugin is checked with
 `node`; the test is skipped when it is missing.
 

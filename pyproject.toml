@@ -7,7 +7,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 
 [project.optional-dependencies]
-dev = ["actionlint-py", "mypy", "pyright", "ruff", "zizmor"]
+dev = ["actionlint-py", "hypothesis", "mypy", "pyright", "ruff", "zizmor"]
 
 [tool.pyright]
 include = ["filo.py", "tests"]
