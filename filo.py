@@ -671,10 +671,15 @@ def drain_spool(scope: str, name: str, deliver: Callable[[JsonObject], None]) ->
         except (OSError, ValueError):
             unlink_if_present(path)
             continue
-        unlink_if_present(path)
         if time.time_ns() - int_field(message, "created_ns", 0) > spool_ttl() * 1_000_000_000:
+            unlink_if_present(path)
             continue
-        deliver(message)
+        try:
+            deliver(message)    # the file goes after the delivery: if that is cut short it is still here
+        except ValueError:      # a message that cannot be shown will not be shown by trying again
+            unlink_if_present(path)
+            continue
+        unlink_if_present(path)
         identifier = message.get("id") or path.stem
         if isinstance(identifier, str) and MESSAGE_ID.fullmatch(identifier):
             write_ack(scope, identifier, name, "delivered from the spool")
