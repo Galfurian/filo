@@ -10,6 +10,7 @@
   <a href="https://github.com/Galfurian/filo/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Galfurian/filo/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/Galfurian/filo/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/Galfurian/filo/actions/workflows/codeql.yml/badge.svg"></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/Galfurian/filo"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/Galfurian/filo/badge"></a>
+  <a href="https://www.bestpractices.dev/projects/15484"><img alt="OpenSSF Best Practices" src="https://www.bestpractices.dev/projects/15484/badge"></a>
   <img alt="Python 3.10 or later" src="https://img.shields.io/badge/python-3.10%2B-blue">
   <img alt="No dependencies" src="https://img.shields.io/badge/dependencies-none-brightgreen">
 </p>
