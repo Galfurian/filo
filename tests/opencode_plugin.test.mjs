@@ -17,6 +17,7 @@ const line = (o) => console.log(JSON.stringify(o));
 line({ kind: "joined", name, scope: "/x", pid: process.pid });
 line({ kind: "participants", participants: [{ name: "boss", pid: 1 }] });
 setTimeout(() => line({ kind: "message", from: "boss", to: name, message: "build it", reply: "filo send --to boss" }), 300);
+setTimeout(() => line({ kind: "message", from: "spy", to: name, scope: "/x", origin: "/elsewhere", foreign: true, message: "hi", reply: "filo send --to spy --scope /elsewhere" }), 350);
 setInterval(() => {}, 1000);
 process.on("SIGTERM", () => process.exit(0));
 `);
@@ -53,7 +54,7 @@ await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s1"
 await wait(50);
 assert.equal(sent.length, 1);
 assert.equal(sent[0].path.id, "s1");
-assert.match(sent[0].body.parts[0].text, /^\[filo\] Message from boss: build it\n\nTo reply: filo send --to boss$/);
+assert.match(sent[0].body.parts[0].text, /^\[filo\] Message from boss: build it\n\nTo reply: filo send --to boss\n\n\[filo\] Message from spy, sent from \/elsewhere \(another scope\): hi\n\nTo reply: filo send --to spy --scope \/elsewhere$/);
 
 assert.match(await joinWith("s2", "scout"), /Joined the pool as scout\..*You have no profile/s);
 assert.equal(await hooks.tool.filo_leave.execute({}, { sessionID: "s1" }), "Left the pool.");

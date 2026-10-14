@@ -42,7 +42,8 @@ export const Filo = async ({ client, directory }) => {
 
   const deliver = (sessionID, state, event) => {
     const reply = event.reply ? `\n\nTo reply: ${event.reply}` : "";
-    state.queue.push(`[filo] Message from ${event.from}: ${event.message}${reply}`);
+    const outside = event.foreign ? `, sent from ${event.origin} (another scope)` : "";
+    state.queue.push(`[filo] Message from ${event.from}${outside}: ${event.message}${reply}`);
     void flush(sessionID, state);
   };
 

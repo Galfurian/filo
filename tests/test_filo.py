@@ -1279,6 +1279,144 @@ class ShowTests(RuntimeCase):
         self.assertIn("at least", result.stderr)
 
 
+def add_gemini_adapter(case: RuntimeCase) -> Path:
+    """Let the case register a `gemini` client whose deliveries are recorded; returns the record."""
+    record = case.root / "gemini-args.json"
+    tool = make_recorder(case.root / "gemini-tool", record)
+    config = case.root / "adapters.json"
+    config.write_text(json.dumps({"gemini": {
+        "id_env": "GEMINI_SESSION", "deliver": [str(tool), "send", "--session", "{session}", "{message}"],
+    }}), encoding="utf-8")
+    case.environment["FILO_ADAPTERS"] = str(config)
+    return record
+
+
+class OriginTests(RuntimeCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.elsewhere = self.root / "elsewhere"
+        self.elsewhere.mkdir()
+
+    def test_a_message_from_inside_the_scope_is_not_foreign(self) -> None:
+        _, lines, _ = self.listen("boss")
+        self.msg("send", "--to", "boss", "--from", "me", "--message", "hello")
+        event = lines.message()
+        assert event is not None
+        self.assertEqual(event["scope"], str(self.scope.resolve()))
+        self.assertEqual(event["origin"], str(self.scope.resolve()))
+        self.assertNotIn("foreign", event)
+        self.assertEqual(event["reply"], 'filo send --to me --from boss --message "..."')
+
+    def test_a_message_from_another_directory_says_so_and_names_where_to_answer(self) -> None:
+        _, lines, _ = self.listen("boss")
+        sent = self.msg("send", "--to", "boss", "--from", "stranger", "--scope", str(self.scope),
+                        "--message", "do this", scope=self.elsewhere)
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        event = lines.message()
+        assert event is not None
+        self.assertIs(event["foreign"], True)
+        self.assertEqual(event["origin"], str(self.elsewhere.resolve()))
+        self.assertEqual(event["scope"], str(self.scope.resolve()))
+        self.assertEqual(event["reply"], f'filo send --to stranger --from boss --scope {self.elsewhere.resolve()} --message "..."')
+        self.assertLess(list(event).index("foreign"), list(event).index("reply"))
+
+    def test_a_message_that_waited_in_the_spool_keeps_its_origin(self) -> None:
+        process, lines, _ = self.listen("boss")
+        process.send_signal(signal.SIGSTOP)
+        self.msg("send", "--to", "boss", "--from", "stranger", "--scope", str(self.scope),
+                 "--message", "later", scope=self.elsewhere)
+        process.send_signal(signal.SIGCONT)
+        event = lines.message()
+        assert event is not None
+        self.assertIs(event["foreign"], True)
+        self.assertEqual(event["origin"], str(self.elsewhere.resolve()))
+
+    def test_text_for_a_client_without_a_listener_says_where_it_came_from(self) -> None:
+        module = load_filo()
+        scope = f"path:{self.scope.resolve()}"
+        plain = module.compose_text("a", "b", "hi", str(self.scope.resolve()), scope)
+        self.assertEqual(plain, '[filo] Message from a: hi\n\nTo reply: filo send --to a --from b --message "..."')
+        outside = module.compose_text("a", "b", "hi", "/some where", scope)
+        self.assertIn("[filo] Message from a, sent from /some where (another scope): hi", outside)
+        self.assertIn("filo send --to a --from b --scope '/some where' --message", outside)
+        self.assertEqual(module.compose_text("a", "b", "hi"), plain)
+
+    def test_a_registered_client_is_told_where_a_message_from_another_directory_came_from(self) -> None:
+        record = add_gemini_adapter(self)
+        env = {"GEMINI_SESSION": "gem-123456"}
+        self.assertEqual(self.msg("register", "--as", "gemini", env=env).returncode, 0)
+        sent = self.msg("send", "--to", "gemini", "--from", "stranger", "--scope", str(self.scope),
+                        "--message", "do this", scope=self.elsewhere)
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        text = json.loads(record.read_text(encoding="utf-8"))[-1]
+        self.assertIn(f"[filo] Message from stranger, sent from {self.elsewhere.resolve()} (another scope): do this", text)
+        self.assertIn(f"--scope {self.elsewhere.resolve()} --message", text)
+
+    def test_a_keyword_scope_has_no_directory_to_be_outside_of(self) -> None:
+        module = load_filo()
+        self.assertFalse(module.is_foreign("keyword:team", "/anywhere"))
+        self.assertEqual(module.display_scope("keyword:team"), "team")
+
+
+class WhoAllTests(RuntimeCase):
+    def setUp(self) -> None:
+        super().setUp()
+        add_gemini_adapter(self)
+
+    def test_every_scope_with_someone_in_it_is_listed_and_empty_ones_are_not(self) -> None:
+        other = self.root / "other"
+        other.mkdir()
+        empty = self.root / "empty"
+        empty.mkdir()
+        self.listen("boss")
+        self.listen("worker", scope=other)
+        quiet, _, _ = self.listen("gone", scope=empty)
+        quiet.terminate()
+        quiet.wait(timeout=5)
+        self.assertEqual(self.msg("register", "--as", "gemini", env={"GEMINI_SESSION": "gem-123456"}, scope=other).returncode, 0)
+        listing = json.loads(self.msg("who", "--all", "--json").stdout)["scopes"]
+        by_scope = {row["scope"]: row for row in listing}
+        self.assertEqual(set(by_scope), {str(self.scope.resolve()), str(other.resolve())})
+        self.assertEqual([row["name"] for row in by_scope[str(other.resolve())]["participants"]], ["worker"])
+        self.assertEqual([row["name"] for row in by_scope[str(other.resolve())]["registered"]], ["gemini"])
+        text = self.msg("who", "--all").stdout
+        self.assertIn(f"{other.resolve()}:\n  worker  pid=", text)
+        self.assertIn("gemini  gemini session=gem-123456  (registered)", text)
+
+    def test_nobody_connected_says_so_and_all_does_not_take_a_scope(self) -> None:
+        self.assertIn("nobody is connected", self.msg("who", "--all").stdout)
+        self.assertEqual(json.loads(self.msg("who", "--all", "--json").stdout), {"scopes": []})
+        refused = self.msg("who", "--all", "--scope", str(self.scope))
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("does not take --scope", refused.stderr)
+
+    def test_the_file_that_names_a_scope_is_not_taken_for_a_participant(self) -> None:
+        self.listen("boss")
+        files = list(self.runtime.glob("*/.scope"))
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].stat().st_mode & 0o777, 0o600)
+        self.assertEqual([row["name"] for row in json.loads(self.msg("who", "--json").stdout)["participants"]], ["boss"])
+
+
+class JoinedEventTests(RuntimeCase):
+    def setUp(self) -> None:
+        super().setUp()
+        add_gemini_adapter(self)
+
+    def test_participants_lists_registered_sessions_too(self) -> None:
+        self.assertEqual(self.msg("register", "--as", "gemini", env={"GEMINI_SESSION": "gem-123456"}).returncode, 0)
+        process = subprocess.Popen(
+            [sys.executable, str(SCRIPT), "join", "--as", "boss", "--json"], cwd=self.scope,
+            env=self.environment, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.children.append(process)
+        lines = Lines(process)
+        self.assertEqual((lines.next() or {}).get("kind"), "joined")
+        participants = lines.next()
+        assert participants is not None
+        self.assertEqual(participants["participants"], [])
+        self.assertEqual(participants["registered"], [{"name": "gemini", "client": "gemini", "session": "gem-123456"}])
+
+
 class GetScriptTests(unittest.TestCase):
     """get.sh, as the release workflow stamps it, against an archive on disk."""
 
