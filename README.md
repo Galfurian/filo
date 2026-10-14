@@ -141,6 +141,21 @@ to the version of the `get.sh` you ran. Uninstall runs the `uninstall.sh` there 
 deletes the directory, but only if the script made it. Check a release as described in
 [SECURITY.md](SECURITY.md#checking-a-release).
 
+**Upgrading.** `filo upgrade --check` says whether a newer release exists, by asking
+GitHub where `/releases/latest` points. `filo upgrade` then fetches the `get.sh` of that
+release, checks that it is stamped for that version, shows what it would do (its
+`--dry-run`) and asks before it runs it; `--yes` skips the question. It upgrades the
+directory this filo runs from, so a copy made by `get.sh` is replaced in place and the
+links stay valid. A checkout is told to `git pull`, and any other copy is refused. It
+needs the network and nothing else of filo does.
+
+To hear about new versions without asking, set `FILO_CHECK_UPDATES=1` in your shell. Then
+`filo who` looks at most once a day (two seconds at most, silently when offline, never
+with `--json`) and, if a newer release exists, adds one line on stderr:
+``filo 0.3.0 is available (this is 0.2.0): run `filo upgrade` ``. The answer is kept in
+`~/.cache/filo/latest-version` (`XDG_CACHE_HOME`). Nothing is checked unless you set it.
+`FILO_RELEASES_URL` points both at a mirror, https only.
+
 **From a checkout.**
 
 ```sh
@@ -184,6 +199,8 @@ filo rename agy-2 reviewer               # or change it later
 filo leave                                  # a registered session leaves the pool
 filo profiles                               # the roles you can join as
 filo profile manager                        # print one
+filo upgrade --check                        # is there a newer release? (the only command that uses the network)
+filo upgrade                                # install it, if this filo came from get.sh
 ```
 
 ### Names and scopes

@@ -52,6 +52,15 @@ checkout, so what runs is what is in the checkout.
 copies nothing, changes no permissions and never overwrites a file it did not create.
 `uninstall.sh` removes only the links that point into the checkout.
 
+**The network.** Messages never leave the machine. The one thing in filo that uses the
+network is `filo upgrade`, plus the look for a new version that `FILO_CHECK_UPDATES=1`
+turns on (a `HEAD` request for `/releases/latest`, at most once a day, answer kept in
+`~/.cache/filo`). Nothing is sent but that request. `filo upgrade` downloads the `get.sh`
+of the newest release, refuses it unless it is stamped for that version, shows its dry run
+and asks before running it, so it carries the trust of the one-line install below. The
+skill tells agents to pass on a "new version" notice and not to run `filo upgrade`
+themselves.
+
 **The one-line install.** `curl … | sh` runs a script from the network, so read this before
 you use it. `get.sh` is attached to each release and the release workflow writes into it the
 version and the SHA-256 of that release's archive; it downloads only that archive, over
