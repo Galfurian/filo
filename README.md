@@ -81,7 +81,7 @@ depends on the recipient: three routes, shown above and described under
 
 | Client | Connects with | A message arrives as | Limits |
 |---|---|---|---|
-| Claude | a Monitor on `filo join --as claude --json` | an event that wakes it, with the reply command | the Monitor expires; start it again |
+| Claude | a Monitor on `filo join --as claude --json --preview 400` | an event that wakes it, with the reply command | the Monitor expires; start it again |
 | Codex | `filo register --as codex` (records `$CODEX_THREAD_ID`) | a normal turn, through `codex queue`, even while you type | none |
 | OpenCode | `/filo` runs the plugin, which starts `filo join` for that session | a user message in the same session, through the plugin; the chat is never locked | the plugin adds the tools `filo_join` and `filo_leave` to every OpenCode session; a message that arrives while OpenCode works waits for the step to end |
 | agy | `filo register --as agy` (records `$ANTIGRAVITY_CONVERSATION_ID`) | a system message, through `agentapi send-message`; the chat is never locked and no second `agy` starts | an idle agy starts a turn on its own when one arrives; a busy one gets it when its current step ends, and it does not interrupt a running command; `register` must run inside agy |
@@ -194,6 +194,7 @@ filo who
 filo send --to claude --from codex --message 'text'
 filo send --to codex --from claude --stdin < review.md
 filo status ID          # delivered? pending? expired?
+filo show ID            # the whole text of a message you received (kept for 24 hours)
 filo join --as human    # a human listener, no LLM
 filo register --as agy --name reviewer   # choose the name of a registered session
 filo rename agy-2 reviewer               # or change it later
@@ -234,6 +235,14 @@ Sandboxed senders (the Codex sandbox cannot connect to Unix sockets, but can
 write files) leave the message in the spool automatically, and the listener
 delivers it within half a second. Every message has an id; `status` reports
 whether it was delivered.
+
+**Long messages in a Monitor.** A Claude Monitor shows only the start of a long line (about 500
+characters), and cuts it without a mark. So `join --json --preview N` (N at least 100) cuts an
+event whose JSON line is longer than N characters and says so: `"truncated": true`, `"length"`
+(of the whole message) and `"show"`, the command that prints it, `filo show ID`. Every
+listener keeps what it receives, privately, for 24 hours, so `show` works whether or not
+`--preview` was used. In every event the body comes last, after `from`, `id` and `reply`.
+Without `--preview` an event is whole, which is what the OpenCode plugin needs.
 
 ## Compatibility
 

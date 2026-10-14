@@ -1154,6 +1154,131 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.uninstall("--force").returncode, 2)
 
 
+class PreviewTests(unittest.TestCase):
+    def test_the_body_comes_last_and_an_event_that_fits_is_left_alone(self) -> None:
+        module = load_filo()
+        message = {"id": "18de6610f927c276-fe7820", "from": "manager", "message": "short", "created_ns": 1}
+        for preview in (None, 400):
+            event = module.message_event("researcher", message, 4242, preview)
+            self.assertEqual(list(event)[-1], "message")
+            self.assertLess(list(event).index("reply"), list(event).index("message"))
+            self.assertEqual(event["message"], "short")
+            self.assertNotIn("truncated", event)
+
+    def test_a_long_event_is_cut_to_the_limit_and_says_so(self) -> None:
+        module = load_filo()
+        body = ("Say \"hello\"\nè già tardi, ci vediamo domani. " * 80)
+        message = {"id": "18de6610f927c276-fe7820", "from": "manager", "message": body, "created_ns": 1}
+        for limit in (100, 400, 1000):
+            event = module.message_event("researcher", message, 4242, limit)
+            self.assertIs(event["truncated"], True)
+            self.assertEqual(event["length"], len(body))
+            self.assertEqual(event["show"], "filo show 18de6610f927c276-fe7820")
+            self.assertTrue(body.startswith(event["message"]))
+            self.assertEqual(list(event)[-1], "message")
+            if limit >= 400:
+                self.assertLessEqual(len(json.dumps(event, ensure_ascii=False)), limit)
+                self.assertGreater(len(event["message"]), 0)
+            else:   # the head alone is longer than the limit: no body, but the way to read it
+                self.assertEqual(event["message"], "")
+
+    def test_the_cut_is_the_longest_that_fits(self) -> None:
+        module = load_filo()
+        message = {"id": "18de6610f927c276-fe7820", "from": "a", "message": "x" * 5000, "created_ns": 1}
+        event = module.message_event("b", message, None, 500)
+        size = len(json.dumps(event, ensure_ascii=False))
+        self.assertLessEqual(size, 500)
+        self.assertGreater(size, 498)
+
+    def test_a_message_without_an_id_is_never_cut(self) -> None:
+        module = load_filo()
+        event = module.message_event("b", {"from": "a", "message": "x" * 5000}, None, 200)
+        self.assertEqual(len(event["message"]), 5000)
+        self.assertNotIn("truncated", event)
+
+
+class ShowTests(RuntimeCase):
+    def test_a_preview_says_it_is_one_and_show_prints_the_rest(self) -> None:
+        _, lines, _ = self.listen("researcher", "--preview", "400")
+        body = "First the instruction, then \"the rest\".\n" + "More text with è and ü. " * 120 + "THE END"
+        sent = self.msg("send", "--to", "researcher", "--from", "manager", "--stdin", stdin=body)
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        event = lines.message()
+        assert event is not None
+        self.assertIs(event["truncated"], True)
+        self.assertEqual(event["length"], len(body))
+        self.assertTrue(body.startswith(str(event["message"])))
+        self.assertNotIn("THE END", json.dumps(event))
+        shown = self.msg("show", str(event["id"]))
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assertEqual(shown.stdout, body + "\n")
+        as_json = json.loads(self.msg("show", str(event["id"]), "--json").stdout)
+        self.assertEqual((as_json["message"], as_json["from"], as_json["to"]), (body, "manager", "researcher"))
+        self.assertEqual(event["show"], f"filo show {event['id']}")
+
+    def test_without_a_preview_the_event_is_whole_and_show_still_works(self) -> None:
+        _, lines, _ = self.listen("researcher")
+        body = "y" * 3000
+        self.msg("send", "--to", "researcher", "--from", "manager", "--stdin", stdin=body)
+        event = lines.message()
+        assert event is not None
+        self.assertEqual(event["message"], body)
+        self.assertNotIn("truncated", event)
+        self.assertEqual(self.msg("show", str(event["id"])).stdout, body + "\n")
+
+    def test_what_is_kept_is_private(self) -> None:
+        _, lines, _ = self.listen("researcher")
+        self.msg("send", "--to", "researcher", "--from", "manager", "--message", "secret plans")
+        event = lines.message()
+        assert event is not None
+        files = list(self.runtime.glob(f"**/inbox/researcher/{event['id']}.json"))
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].stat().st_mode & 0o777, 0o600)
+        self.assertEqual(files[0].parent.stat().st_mode & 0o777, 0o700)
+
+    def test_a_message_left_for_a_listener_is_kept_when_it_arrives(self) -> None:
+        process, lines, _ = self.listen("researcher")
+        process.send_signal(signal.SIGSTOP)
+        sent = self.msg("send", "--to", "researcher", "--from", "manager", "--message", "while stopped " * 50)
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        process.send_signal(signal.SIGCONT)
+        event = lines.message()
+        assert event is not None
+        self.assertEqual(self.msg("show", str(event["id"])).stdout, "while stopped " * 50 + "\n")
+
+    def test_an_unknown_id_and_a_value_that_is_not_an_id_are_errors(self) -> None:
+        unknown = self.msg("show", "18de6610f927c276-fe7820")
+        self.assertEqual(unknown.returncode, 1)
+        self.assertIn("no message", unknown.stderr)
+        bad = self.msg("show", "../../etc/passwd")
+        self.assertEqual(bad.returncode, 1)
+        self.assertIn("not a message id", bad.stderr)
+
+    def test_old_messages_are_forgotten(self) -> None:
+        module = load_filo()
+        with tempfile.TemporaryDirectory() as raw:
+            os.environ["FILO_DIR"] = str(Path(raw) / "rt")
+            try:
+                scope = module.canonical_scope(str(self.scope))
+                message = {"id": "18de6610f927c276-fe7820", "from": "a", "message": "x", "created_ns": 1}
+                module.keep_received(scope, "b", message)
+                kept = module.scope_directory(scope) / "inbox" / "b" / "18de6610f927c276-fe7820.json"
+                self.assertTrue(kept.is_file())
+                module.prune_inbox(scope)
+                self.assertTrue(kept.is_file())
+                old = time.time() - module.INBOX_TTL - 10
+                os.utime(kept, (old, old))
+                module.prune_inbox(scope)
+                self.assertFalse(kept.exists())
+            finally:
+                del os.environ["FILO_DIR"]
+
+    def test_a_preview_that_is_too_small_is_refused(self) -> None:
+        result = self.msg("join", "--as", "x", "--json", "--preview", "10")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("at least", result.stderr)
+
+
 class GetScriptTests(unittest.TestCase):
     """get.sh, as the release workflow stamps it, against an archive on disk."""
 

@@ -32,15 +32,21 @@ and stays untrusted (see Rules).
 - **Claude:** start a persistent background Monitor on
 
   ```
-  filo join --as NAME --json
+  filo join --as NAME --json --preview 400
   ```
 
   (`NAME` is `claude` by default.) Each output line is JSON. The first one
   (`"kind":"joined"`) carries your final `name`; remember it. Act only on
-  `"kind":"message"` lines (fields `from`, `message`, `reply`, `id`). Ignore
+  `"kind":"message"` lines (fields `from`, `id`, `reply`, `message`). Ignore
   `participants` and `presence` lines. The Monitor expires after a while: start it
   again when it does. Messages sent meanwhile are kept for an hour and arrive when you
   rejoin.
+
+  A Monitor shows only the start of a long line. With `--preview 400`, filo cuts a
+  long message itself and says so: the event has `"truncated": true`, the `length` of
+  the whole message and `show`, the command that prints it. **When `truncated` is
+  true, run that command (`filo show ID`) and read the whole message before you act on
+  it**: the part that was cut is often the instruction.
 
 - **Codex:** announce this session so others can find it:
 
@@ -129,4 +135,5 @@ file for the listener; that is normal and needs no approval.
   there. `filo upgrade` runs a script downloaded from the network: the user runs it, you
   do not.
 - Keep messages short and self-contained: say what you need or what you found,
-  with file paths. Use `--stdin` for anything long or multi-line.
+  with file paths. Use `--stdin` for anything long or multi-line, and put what the
+  reader has to do first.

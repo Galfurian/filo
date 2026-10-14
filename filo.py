@@ -79,6 +79,8 @@ def known_ttl() -> float:
 
 
 ACK_TTL = 86400.0
+INBOX_TTL = 86400.0  # how long a listener keeps what it received, for `filo show`
+MIN_PREVIEW = 100
 
 JsonObject = dict[str, Any]
 
@@ -366,18 +368,72 @@ def compose_text(sender: str, recipient: str, body: str) -> str:
     return f"[filo] Message from {sender}: {body}\n\nTo reply: {reply_hint(sender, recipient)}"
 
 
-def message_event(name: str, message: JsonObject, peer_pid: int | None = None) -> JsonObject:
-    """The event a listener emits for one incoming message."""
+def message_event(name: str, message: JsonObject, peer_pid: int | None = None,
+                  preview: int | None = None) -> JsonObject:
+    """The event a listener emits for one incoming message. The body comes last, so that a client
+    that shows only the start of a line still shows who wrote, the id and how to reply.
+
+    With ``preview``, an event longer than that many characters carries only the start of the body
+    and says so: ``truncated``, ``length`` (of the whole body) and ``show``, the command that prints it."""
     sender = str(message.get("from", "anonymous"))
     event: JsonObject = {
         "kind": "message", "id": message.get("id"), "from": sender, "to": name,
-        "message": message.get("message", ""),
-        "created_ns": message.get("created_ns"),
         "reply": reply_hint(sender, name),
+        "created_ns": message.get("created_ns"),
     }
     if peer_pid is not None:
         event["peer_pid"] = peer_pid
-    return event
+    event["message"] = message.get("message", "")
+    if preview is None or not message.get("id"):
+        return event
+    return preview_event(event, preview)
+
+
+def preview_event(event: JsonObject, limit: int) -> JsonObject:
+    """``event`` as it is when its JSON line fits in ``limit`` characters, else with the body cut to fit."""
+    def size(candidate: JsonObject) -> int:
+        return len(json.dumps(candidate, ensure_ascii=False))
+
+    if size(event) <= limit:
+        return event
+    body = str(event["message"])
+    head = {key: value for key, value in event.items() if key != "message"}
+
+    def cut(length: int) -> JsonObject:
+        return {**head, "truncated": True, "length": len(body), "show": f"filo show {event['id']}",
+                "message": body[:length]}
+
+    low, high = 0, len(body)    # the longest start of the body that still fits; none at all is allowed
+    while low < high:
+        middle = (low + high + 1) // 2
+        if size(cut(middle)) <= limit:
+            low = middle
+        else:
+            high = middle - 1
+    return cut(low)
+
+
+def keep_received(scope: str, name: str, message: JsonObject) -> None:
+    """Keep what ``name`` received, so that `filo show` can print it whole. Best effort."""
+    message_id = message.get("id")
+    if not isinstance(message_id, str) or not MESSAGE_ID.fullmatch(message_id):
+        return
+    try:
+        write_metadata(scope_directory(scope) / "inbox" / valid_name(name) / f"{message_id}.json", {
+            "id": message_id, "from": message.get("from", "anonymous"), "to": name,
+            "message": message.get("message", ""), "created_ns": message.get("created_ns"),
+        })
+    except OSError:
+        pass
+
+
+def prune_inbox(scope: str) -> None:
+    for old in scope_directory(scope).glob("inbox/*/*.json"):
+        try:
+            if time.time() - old.stat().st_mtime > INBOX_TTL:
+                unlink_if_present(old)
+        except OSError:
+            continue
 
 
 def emit_event(payload: JsonObject, as_json: bool) -> None:
@@ -966,7 +1022,9 @@ class Listener:
     """A participant that receives messages on its Unix socket and prints them."""
 
     def __init__(self, scope: str, name: str, server: socket.socket, as_json: bool,
-                 parent: int | None = None) -> None:
+                 parent: int | None = None, preview: int | None = None) -> None:
+        self.preview = preview
+        self.next_prune = 0.0
         self.scope = scope
         self.parent = parent
         self.name = name
@@ -998,6 +1056,9 @@ class Listener:
         """Deliver spooled messages and answer connections until the parent, if any, is gone."""
         while self.parent is None or pid_alive(self.parent):
             drain_spool(self.scope, self.name, self.print_spooled)
+            if time.monotonic() >= self.next_prune:
+                prune_inbox(self.scope)
+                self.next_prune = time.monotonic() + 60
             try:
                 connection, _ = self.server.accept()
             except TimeoutError:
@@ -1006,7 +1067,11 @@ class Listener:
                 self.handle(connection)
 
     def print_spooled(self, message: JsonObject) -> None:
-        self.emit(message_event(self.name, message))
+        self.receive(message, None)
+
+    def receive(self, message: JsonObject, peer_pid: int | None) -> None:
+        keep_received(self.scope, self.name, message)
+        self.emit(message_event(self.name, message, peer_pid, self.preview))
 
     def emit(self, payload: JsonObject) -> None:
         emit_event(payload, self.as_json)
@@ -1030,7 +1095,7 @@ class Listener:
         if operation == "info":
             return {"ok": True, "name": self.name, "pid": os.getpid()}
         if operation == "message":
-            self.emit(message_event(self.name, message, peer_pid))
+            self.receive(message, peer_pid)
             if message.get("id"):
                 write_ack(self.scope, str(message["id"]), self.name, "delivered directly")
             return {"ok": True}
@@ -1053,10 +1118,12 @@ class Listener:
 
 
 def join(args: argparse.Namespace) -> int:
+    if args.preview is not None and args.preview < MIN_PREVIEW:
+        raise UserError(f"join: --preview must be at least {MIN_PREVIEW}")
     scope = canonical_scope(args.scope)
     existing = participant_rows(scope)
     name, server = claim_listener_name(scope, valid_name(args.name, "--as"), args.exact)
-    listener = Listener(scope, name, server, args.json, args.parent)
+    listener = Listener(scope, name, server, args.json, args.parent, args.preview)
 
     def stop(_signum: int, _frame: object) -> None:
         listener.close()
@@ -1214,6 +1281,7 @@ def command_parser() -> argparse.ArgumentParser:
             "  filo send --to claude --from codex --message 'review this'\n"
             "  filo send --to codex --from claude --stdin < message.txt\n"
             "  filo status ID                    was a message delivered?\n"
+            "  filo show ID                      the whole text of a message that was shortened\n"
             "  filo upgrade --check              is there a newer release?\n"
             "\nThe default scope is the current directory. Set FILO_DIR to change the local runtime root."
         ),
@@ -1230,6 +1298,9 @@ def command_parser() -> argparse.ArgumentParser:
     join_parser.add_argument("--parent", type=int, metavar="PID",
                              help="leave when this process ends (for a plugin that starts the listener)")
     join_parser.add_argument("--json", action="store_true", help="emit machine-readable output")
+    join_parser.add_argument("--preview", type=int, metavar="N",
+                             help=f"with --json: cut an event longer than N characters (at least {MIN_PREVIEW}) "
+                                  "and say so; `filo show ID` prints the whole message")
 
     register_parser = sub.add_parser(
         "register", help="announce a client that has no listener (codex, agy, or one from the adapters file)")
@@ -1273,6 +1344,11 @@ def command_parser() -> argparse.ArgumentParser:
     source.add_argument("--stdin", action="store_true", help="read the entire message from standard input")
     send_parser.add_argument("text", nargs="?", help="message text, as an alternative to --message")
 
+    show_parser = sub.add_parser("show", help="print the whole body of a message this scope received")
+    scope_argument(show_parser)
+    show_parser.add_argument("id", help="the id in the event, or in what `filo show` was told to print")
+    show_parser.add_argument("--json", action="store_true", help="print the whole record as JSON")
+
     status_parser = sub.add_parser("status", help="show whether a sent message was delivered")
     scope_argument(status_parser)
     status_parser.add_argument("id", help="the id printed by send")
@@ -1295,6 +1371,24 @@ def who_command(args: argparse.Namespace, scope: str) -> int:
         print(f"  {row.name}  {row.client} session={row.session}  (registered)")
     update_notice()
     return 0
+
+
+def show_command(args: argparse.Namespace, scope: str) -> int:
+    """Print the whole body of a message that a listener of this scope received."""
+    if not MESSAGE_ID.fullmatch(args.id):
+        raise UserError("show: not a message id")
+    for path in sorted(scope_directory(scope).glob(f"inbox/*/{args.id}.json")):
+        try:
+            record = read_object(path)
+        except (OSError, ValueError):
+            continue
+        if args.json:
+            print(json.dumps(record, ensure_ascii=False))
+        else:
+            print(record.get("message", ""))
+        return 0
+    raise UserError(f"show: no message {args.id} was received in this scope, or it is more than "
+                    f"{int(INBOX_TTL // 3600)} hours old")
 
 
 def message_body(args: argparse.Namespace) -> str:
@@ -1338,6 +1432,8 @@ def main(argv: list[str] | None = None) -> int:
         scope = canonical_scope(args.scope)
         if args.command == "who":
             return who_command(args, scope)
+        if args.command == "show":
+            return show_command(args, scope)
         if args.command == "status":
             print(message_status(scope, args.id))
             return 0
