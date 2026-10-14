@@ -1296,22 +1296,26 @@ def add_gemini_adapter(case: RuntimeCase) -> Path:
 
 
 class OriginTests(RuntimeCase):
+    """Where a message comes from: the scope its sender belongs to, not the directory it happens to be in."""
+
     def setUp(self) -> None:
         super().setUp()
         self.elsewhere = self.root / "elsewhere"
         self.elsewhere.mkdir()
+        self.worktree = self.root / "worktree"
+        self.worktree.mkdir()
+        add_gemini_adapter(self)
 
-    def test_a_message_from_inside_the_scope_is_not_foreign(self) -> None:
+    def test_a_message_from_inside_the_scope_says_nothing_about_where_it_came_from(self) -> None:
         _, lines, _ = self.listen("boss")
         self.msg("send", "--to", "boss", "--from", "me", "--message", "hello")
         event = lines.message()
         assert event is not None
-        self.assertEqual(event["scope"], str(self.scope.resolve()))
-        self.assertEqual(event["origin"], str(self.scope.resolve()))
-        self.assertNotIn("foreign", event)
+        for key in ("foreign", "origin", "scope"):
+            self.assertNotIn(key, event)
         self.assertEqual(event["reply"], 'filo send --to me --from boss --message "..."')
 
-    def test_a_message_from_another_directory_says_so_and_names_where_to_answer(self) -> None:
+    def test_a_message_from_an_outsider_says_so_and_names_where_to_answer(self) -> None:
         _, lines, _ = self.listen("boss")
         sent = self.msg("send", "--to", "boss", "--from", "stranger", "--scope", str(self.scope),
                         "--message", "do this", scope=self.elsewhere)
@@ -1320,11 +1324,64 @@ class OriginTests(RuntimeCase):
         assert event is not None
         self.assertIs(event["foreign"], True)
         self.assertEqual(event["origin"], str(self.elsewhere.resolve()))
-        self.assertEqual(event["scope"], str(self.scope.resolve()))
         self.assertEqual(event["reply"], f'filo send --to stranger --from boss --scope {self.elsewhere.resolve()} --message "..."')
         self.assertLess(list(event).index("foreign"), list(event).index("reply"))
 
-    def test_a_message_that_waited_in_the_spool_keeps_its_origin(self) -> None:
+    def test_a_session_that_moved_to_another_directory_is_still_in_its_own_scope(self) -> None:
+        # registered in the project, then at work in a worktree: it writes to the project with --scope
+        _, lines, _ = self.listen("boss")
+        registered = self.msg("register", "--as", "gemini", "--name", "worker", env={"GEMINI_SESSION": "gem-123456"})
+        self.assertEqual(registered.returncode, 0, registered.stderr)
+        sent = self.msg("send", "--to", "boss", "--from", "worker", "--scope", str(self.scope),
+                        "--message", "done", scope=self.worktree)
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        event = lines.message()
+        assert event is not None
+        self.assertNotIn("foreign", event)
+        self.assertEqual(event["reply"], 'filo send --to worker --from boss --message "..."')
+
+    def test_a_listener_in_another_scope_is_found_by_name_wherever_it_runs(self) -> None:
+        _, lines, _ = self.listen("boss")
+        self.listen("remote", scope=self.elsewhere)
+        sent = self.msg("send", "--to", "boss", "--from", "remote", "--scope", str(self.scope),
+                        "--message", "hi", scope=self.worktree)
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        event = lines.message()
+        assert event is not None
+        self.assertIs(event["foreign"], True)
+        self.assertEqual(event["origin"], str(self.elsewhere.resolve()))     # not the worktree it ran in
+        self.assertIn(f"--scope {self.elsewhere.resolve()}", str(event["reply"]))
+
+    def test_a_name_that_belongs_to_two_scopes_is_not_guessed(self) -> None:
+        second = self.root / "second"
+        second.mkdir()
+        _, lines, _ = self.listen("boss")
+        self.listen("twin", scope=self.elsewhere)
+        self.listen("twin", scope=second)
+        self.msg("send", "--to", "boss", "--from", "twin", "--scope", str(self.scope),
+                 "--message", "which one?", scope=self.worktree)
+        event = lines.message()
+        assert event is not None
+        self.assertIs(event["foreign"], True)
+        self.assertEqual(event["origin"], str(self.worktree.resolve()))      # where it ran: the safe answer
+
+    def test_keyword_scopes_count_too(self) -> None:
+        _, lines, _ = self.listen("boss", "--scope", "team")
+        self.msg("send", "--to", "boss", "--from", "stranger", "--scope", "team", "--message", "hello",
+                 scope=self.elsewhere)
+        event = lines.message()
+        assert event is not None
+        self.assertIs(event["foreign"], True)
+        self.assertEqual(event["origin"], str(self.elsewhere.resolve()))
+        _, from_team, _ = self.listen("lead", scope=self.elsewhere)
+        self.listen("member", "--scope", "team")
+        self.msg("send", "--to", "lead", "--from", "member", "--scope", str(self.elsewhere), "--message", "hi")
+        back = from_team.message()
+        assert back is not None
+        self.assertEqual((back["foreign"], back["origin"]), (True, "team"))
+        self.assertIn("--scope team ", str(back["reply"]))
+
+    def test_a_message_that_waited_in_the_spool_keeps_where_it_came_from(self) -> None:
         process, lines, _ = self.listen("boss")
         process.send_signal(signal.SIGSTOP)
         self.msg("send", "--to", "boss", "--from", "stranger", "--scope", str(self.scope),
@@ -1335,17 +1392,28 @@ class OriginTests(RuntimeCase):
         self.assertIs(event["foreign"], True)
         self.assertEqual(event["origin"], str(self.elsewhere.resolve()))
 
-    def test_text_for_a_client_without_a_listener_says_where_it_came_from(self) -> None:
+    def test_what_an_older_filo_sends_is_still_understood(self) -> None:
         module = load_filo()
         scope = f"path:{self.scope.resolve()}"
-        plain = module.compose_text("a", "b", "hi", str(self.scope.resolve()), scope)
-        self.assertEqual(plain, '[filo] Message from a: hi\n\nTo reply: filo send --to a --from b --message "..."')
-        outside = module.compose_text("a", "b", "hi", "/some where", scope)
-        self.assertIn("[filo] Message from a, sent from /some where (another scope): hi", outside)
-        self.assertIn("filo send --to a --from b --scope '/some where' --message", outside)
-        self.assertEqual(module.compose_text("a", "b", "hi"), plain)
+        message = {"id": "18de6610f927c276-fe7820", "from": "old", "message": "x", "created_ns": 1}
+        inside = module.message_event("me", {**message, "origin": str(self.scope.resolve())}, None, None, scope)
+        outside = module.message_event("me", {**message, "origin": "/somewhere"}, None, None, scope)
+        silent = module.message_event("me", message, None, None, scope)
+        self.assertNotIn("foreign", inside)
+        self.assertEqual((outside["foreign"], outside["origin"]), (True, "/somewhere"))
+        self.assertNotIn("foreign", silent)
 
-    def test_a_registered_client_is_told_where_a_message_from_another_directory_came_from(self) -> None:
+    def test_a_home_that_is_not_a_scope_is_an_outsider_and_is_never_trusted(self) -> None:
+        module = load_filo()
+        scope = f"path:{self.scope.resolve()}"
+        for home in ("/just/a/path", 7, None, "path:" + "x" * 5000, ["path:/x"]):
+            event = module.message_event("me", {"id": "18de6610f927c276-fe7820", "from": "x", "message": "y",
+                                                "home": home}, None, None, scope)
+            self.assertIs(event["foreign"], True, repr(home))
+            self.assertNotIn("origin", event)
+            self.assertEqual(event["reply"], 'filo send --to x --from me --message "..."')
+
+    def test_a_registered_client_is_told_where_a_message_from_another_scope_came_from(self) -> None:
         record = add_gemini_adapter(self)
         env = {"GEMINI_SESSION": "gem-123456"}
         self.assertEqual(self.msg("register", "--as", "gemini", env=env).returncode, 0)
@@ -1355,11 +1423,24 @@ class OriginTests(RuntimeCase):
         text = json.loads(record.read_text(encoding="utf-8"))[-1]
         self.assertIn(f"[filo] Message from stranger, sent from {self.elsewhere.resolve()} (another scope): do this", text)
         self.assertIn(f"--scope {self.elsewhere.resolve()} --message", text)
+        self.msg("send", "--to", "gemini", "--from", "me", "--message", "inside")
+        self.assertIn("[filo] Message from me: inside", json.loads(record.read_text(encoding="utf-8"))[-1])
 
-    def test_a_keyword_scope_has_no_directory_to_be_outside_of(self) -> None:
+    def test_text_for_a_client_without_a_listener(self) -> None:
         module = load_filo()
-        self.assertFalse(module.is_foreign("keyword:team", "/anywhere"))
+        scope = f"path:{self.scope.resolve()}"
+        plain = module.compose_text("a", "b", "hi", scope, scope)
+        self.assertEqual(plain, '[filo] Message from a: hi\n\nTo reply: filo send --to a --from b --message "..."')
+        outside = module.compose_text("a", "b", "hi", "path:/some where", scope)
+        self.assertIn("[filo] Message from a, sent from /some where (another scope): hi", outside)
+        self.assertIn("filo send --to a --from b --scope '/some where' --message", outside)
+        self.assertIn("sent from another scope", module.compose_text("a", "b", "hi", "nonsense", scope))
+        self.assertEqual(module.compose_text("a", "b", "hi"), plain)
+
+    def test_a_keyword_scope_shows_as_its_keyword(self) -> None:
+        module = load_filo()
         self.assertEqual(module.display_scope("keyword:team"), "team")
+        self.assertFalse(module.is_foreign("keyword:team", "/anywhere"))
 
 
 class WhoAllTests(RuntimeCase):
@@ -1488,8 +1569,8 @@ class DetachedListenerTests(RuntimeCase):
         event = lines.message()
         assert event is not None
         self.assertEqual((event["from"], event["message"], event["to"]), ("me", "hello", "boss"))
-        self.assertEqual(event["scope"], str(self.scope.resolve()))
-        self.assertEqual(event["origin"], str(self.scope.resolve()))
+        self.assertNotIn("foreign", event)
+        self.assertNotIn("origin", event)
         self.assertIsInstance(event["peer_pid"], int)
         self.assertEqual(list(event)[-1], "message")
 

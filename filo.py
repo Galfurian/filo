@@ -84,6 +84,7 @@ def known_ttl() -> float:
 ACK_TTL = 86400.0
 INBOX_TTL = 86400.0  # how long a listener keeps what it received, for `filo show`
 MIN_PREVIEW = 100
+HOME_LIMIT = 1000  # the longest scope a message may say it comes from
 
 JsonObject = dict[str, Any]
 
@@ -118,11 +119,67 @@ def display_scope(scope: str) -> str:
 
 
 def current_origin() -> str | None:
-    """The directory this process runs in: where a message it sends comes from."""
+    """The directory this process runs in."""
     try:
         return str(Path.cwd())
     except OSError:
         return None
+
+
+def is_member(scope: str, name: str) -> bool:
+    """Whether ``name`` has a listener or a registration in ``scope``. It only looks at what is on disk:
+    it creates nothing and probes nothing, so a name that is gone but not yet cleaned up counts."""
+    digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:16]
+    directory = runtime_root() / digest
+    return (directory / f"{name}.json").is_file() or (directory / f"{name}.reg").is_file()
+
+
+def current_home(sender: str, target: str) -> str | None:
+    """The scope that the sender of a message belongs to, which is where it can be answered.
+
+    A session is not always in the directory of its scope: an agent that registered in a project and
+    then moved to a worktree is still in the project's scope. So the answer is the first of: the scope of
+    the directory the sender runs in, if it is a member; the scope the message is for, if it is a member
+    there; the one other scope in which it is a member; and, failing those, the directory it runs in."""
+    try:
+        here = canonical_scope(None)
+    except OSError:
+        return None
+    for scope in (here, target):
+        if is_member(scope, sender):
+            return scope
+    others = [scope for scope in known_scopes() if scope not in (here, target) and is_member(scope, sender)]
+    return others[0] if len(others) == 1 else here
+
+
+def sender_fields(sender: str, target: str) -> JsonObject:
+    """What a message says about where it comes from: ``home`` is its sender's scope, ``origin``
+    the directory it ran in (what filo before 0.3.2 looked at)."""
+    fields: JsonObject = {}
+    origin, home = current_origin(), current_home(sender, target)
+    if origin is not None:
+        fields["origin"] = origin
+    if home is not None:
+        fields["home"] = home
+    return fields
+
+
+def sent_from(scope: str, message: JsonObject) -> tuple[bool, str | None]:
+    """Whether ``message`` comes from outside ``scope``, and the scope it says it comes from.
+
+    A message that names its home scope is outside when that is another scope, and one whose home is
+    not a scope at all is outside too. One from an older filo names only the directory it ran in.
+    A message that says nothing is not taken for an outsider: there is nothing to go on."""
+    if "home" in message:
+        home = message["home"]
+        valid = isinstance(home, str) and len(home) <= HOME_LIMIT and home.startswith(("path:", "keyword:"))
+        if not valid or not isinstance(home, str):
+            return True, None
+        return home != scope, display_scope(home)
+    origin = message.get("origin")
+    if isinstance(origin, str) and origin and len(origin) <= HOME_LIMIT:
+        return is_foreign(scope, origin), origin
+    return False, None
 
 
 def is_foreign(scope: str, origin: object) -> bool:
@@ -436,13 +493,13 @@ def reply_hint(sender: str, me: str, origin: str | None = None) -> str:
     return f'filo send --to {shlex.quote(sender)} --from {shlex.quote(me)}{where} --message "..."'
 
 
-def compose_text(sender: str, recipient: str, body: str, origin: str | None = None,
+def compose_text(sender: str, recipient: str, body: str, home: str | None = None,
                  scope: str | None = None) -> str:
-    """A message as an agent without a listener sees it: header, body, reply command. A message
-    from another directory says so, and its reply command names that directory."""
-    outside = origin if scope is not None and origin is not None and is_foreign(scope, origin) else None
-    where = f", sent from {origin} (another scope)" if outside else ""
-    return f"[filo] Message from {sender}{where}: {body}\n\nTo reply: {reply_hint(sender, recipient, outside)}"
+    """A message as an agent without a listener sees it: header, body, reply command. A message from
+    another scope says so, and its reply command names that scope. ``home`` is the sender's scope."""
+    outside, where = (False, None) if scope is None or home is None else sent_from(scope, {"home": home})
+    sent = (f", sent from {where} (another scope)" if where else ", sent from another scope") if outside else ""
+    return f"[filo] Message from {sender}{sent}: {body}\n\nTo reply: {reply_hint(sender, recipient, where if outside else None)}"
 
 
 def message_event(name: str, message: JsonObject, peer_pid: int | None = None,
@@ -450,24 +507,20 @@ def message_event(name: str, message: JsonObject, peer_pid: int | None = None,
     """The event a listener emits for one incoming message. The body comes last, so that a client
     that shows only the start of a line still shows who wrote, the id and how to reply.
 
-    ``scope`` is the scope of the listener. ``origin`` is the directory the sender says it ran in,
-    and ``foreign`` is true when that is not this scope: the message comes from outside it, and the
-    reply command then names that directory.
+    ``scope`` is the scope of the listener. A message that comes from another scope has ``foreign``
+    true and ``origin``, the scope its sender belongs to, and its reply command names that scope;
+    one from the listener's own scope has neither.
 
     With ``preview``, an event longer than that many characters carries only the start of the body
     and says so: ``truncated``, ``length`` (of the whole body) and ``show``, the command that prints it."""
     sender = str(message.get("from", "anonymous"))
-    raw_origin = message.get("origin")
-    origin = raw_origin if isinstance(raw_origin, str) and raw_origin else None
-    foreign = scope is not None and is_foreign(scope, origin)
+    outside, origin = sent_from(scope, message) if scope is not None else (False, None)
     event: JsonObject = {"kind": "message", "id": message.get("id"), "from": sender, "to": name}
-    if scope is not None:
-        event["scope"] = display_scope(scope)
-    if origin is not None:
-        event["origin"] = origin
-    if foreign:
+    if outside:
         event["foreign"] = True
-    event["reply"] = reply_hint(sender, name, origin if foreign else None)
+        if origin is not None:
+            event["origin"] = origin
+    event["reply"] = reply_hint(sender, name, origin if outside else None)
     event["created_ns"] = message.get("created_ns")
     if peer_pid is not None:
         event["peer_pid"] = peer_pid
@@ -512,8 +565,10 @@ def keep_received(scope: str, name: str, message: JsonObject, peer_pid: int | No
         "message": message.get("message", ""), "created_ns": message.get("created_ns"),
         "received_ns": time.time_ns(),
     }
-    if isinstance(message.get("origin"), str):
-        record["origin"] = message["origin"]
+    for key in ("origin", "home"):
+        value = message.get(key)
+        if isinstance(value, str) and len(value) <= HOME_LIMIT:
+            record[key] = value
     if peer_pid is not None:
         record["peer_pid"] = peer_pid
     try:
@@ -583,10 +638,8 @@ def spool_message(scope: str, recipient: str, sender: str, body: str, message_id
     """Leave a message as a file for ``recipient``'s listener to deliver."""
     directory = scope_directory(scope) / "spool" / valid_name(recipient)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    record: JsonObject = {"id": message_id, "from": sender, "message": body, "created_ns": time.time_ns()}
-    origin = current_origin()
-    if origin is not None:
-        record["origin"] = origin
+    record: JsonObject = {"id": message_id, "from": sender, "message": body, "created_ns": time.time_ns(),
+                          **sender_fields(sender, scope)}
     write_metadata(directory / f"{message_id}.msg", record)
 
 
@@ -1052,7 +1105,7 @@ def deliver_offline(scope: str, recipient: str, sender: str, body: str, message_
     target = adapter_target(scope, recipient)
     if target is not None:
         adapter, session, env = target
-        text = compose_text(sender, recipient, body, current_origin(), scope)
+        text = compose_text(sender, recipient, body, sender_fields(sender, scope).get("home"), scope)
         where = adapter.deliver(session, text, scope_path(scope) or "", env)
         write_ack(scope, message_id, recipient, f"queued to {where}")
         return f"queued for {where} ({message_id})"
@@ -1079,9 +1132,7 @@ def deliver_message(scope: str, recipient: str, sender: str, body: str, message_
     payload: JsonObject = {
         "op": "message", "id": message_id, "from": sender, "message": body, "created_ns": time.time_ns(),
     }
-    origin = current_origin()
-    if origin is not None:
-        payload["origin"] = origin
+    payload.update(sender_fields(sender, scope))
     try:
         reply = request(socket_path(scope, recipient), payload)
     except PermissionError as exc:

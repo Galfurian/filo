@@ -38,19 +38,13 @@ protect.
   these are the address and token of its own sidecar, enough to send messages as that
   conversation. The file is `0600` and is removed when the session is forgotten.
 
-**Where a message came from.** A message carries the directory the sender ran in (`origin`), and a
-listener marks it `foreign` when that is not its scope; the skill tells agents to pass
-such a message to the user and wait. `origin` is reported by the sender's process, so it
-is as trustworthy as `--from` is, which is not at all against a process of yours: it
-helps an honest agent notice that a message crossed scopes, and it protects against nothing
-else. The `peer_pid` of an event is the one thing the system vouches for. `filo who --all`
-reads the runtime directory, which only you can read.
-
-**A detached listener.** `join --detach` leaves a listener running in a process of its own, in
-a session of its own, with its output closed. It ends when the process given as `--parent`
-ends or when `filo leave --name` asks it to (any process of yours can ask, as any can send).
-It is not a service: it has no port, answers only its own user on its Unix socket, and
-there is none unless a session started it.
+**Where a message came from.** A message carries the scope its sender belongs to (`home`, and the
+directory it ran in, `origin`, for older filo), and a listener marks it `foreign` when that is not its
+scope; the skill tells agents to tell the user about such a message. What it says is reported by the
+sender's process, so it is as trustworthy as `--from` is, which is not at all against a process of yours:
+it helps an honest agent notice that a message crossed scopes, and protects against nothing else. A
+`home` that is not a scope counts as foreign, never as local. The `peer_pid` of an event is the one thing
+the system vouches for. `filo who --all` reads the runtime directory, which only you can read.
 
 **What a listener keeps.** For `filo show`, each listener writes the messages it receives to
 `inbox/<name>/<id>.json` in the scope's runtime directory (`0600` files in a `0700`
