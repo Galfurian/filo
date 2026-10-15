@@ -136,6 +136,16 @@ session leaves with `filo leave`, and a listener by stopping or with `filo leave
 session by its exact name from `filo who`, and use your own exact name in
 `--from`.
 
+A registered session belongs to the scope where it registered, wherever its shell is. An agent whose
+commands run in another directory, typically a git worktree of the project, would otherwise look at
+the scope of that directory, find nobody and report that a recipient who is connected is not. So
+`who`, `send`, `status`, `show`, `leave` and `rename` work in the scope where the session of the
+client that runs them (`$CODEX_THREAD_ID`, `$ANTIGRAVITY_CONVERSATION_ID`...) is registered, and `send`
+also in the scope where its `--from` name is a member, when the current directory is a different scope.
+It says so on stderr, it is never a guess (two scopes that hold the session or the name mean no
+inference), and `--scope` always wins. `join` and `register` always use the current directory: they
+create the membership.
+
 `filo who --all` lists every scope that has someone in it: its directory, its listeners
 and its registered sessions. A scope shows up once a session has joined or registered
 with filo 0.3 or later.

@@ -87,6 +87,10 @@ and stays untrusted (see Rules).
 - **Any other client** listed in the adapters file:
   `filo register --as <client> --name NAME`.
 
+A registered session stays in the scope where it registered, even when its commands run in
+another directory such as a git worktree: `filo` finds that scope by itself and says so on stderr.
+`--scope PATH` always wins.
+
 A name that is taken is an error. Change a registered name later with
 `filo rename OLD NEW`; a listener changes its name by running `join --as NEW`.
 

@@ -1609,6 +1609,81 @@ class OriginTests(RuntimeCase):
         self.assertFalse(module.is_foreign("keyword:team", "/anywhere"))
 
 
+class SessionScopeTests(RuntimeCase):
+    """A registered session, or a sender that is a member of a scope, stays in that scope when its shell
+    is in another directory, such as a git worktree of the project."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.worktree = self.scope / ".worktrees" / "feature"
+        self.worktree.mkdir(parents=True)
+        add_gemini_adapter(self)        # a client without a process of its own to look for: its registration stays
+        self.me = {"GEMINI_SESSION": "gem-123456"}
+        self.listen("boss")
+        registered = self.msg("register", "--as", "gemini", "--name", "worker", env=self.me)
+        self.assertEqual(registered.returncode, 0, registered.stderr)
+
+    def test_a_registered_session_sends_from_a_worktree_without_saying_where_to(self) -> None:
+        sent = self.msg("send", "--to", "boss", "--from", "worker", "--message", "hi", scope=self.worktree, env=self.me)
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        self.assertIn("sent directly to boss", sent.stdout)
+        self.assertIn(f"working in {self.scope.resolve()}", sent.stderr)
+
+    def test_who_status_and_leave_follow_it_too(self) -> None:
+        who = self.msg("who", scope=self.worktree, env=self.me)
+        self.assertIn(f"connected to {self.scope.resolve()}:", who.stdout)
+        self.assertIn("boss", who.stdout)
+        self.assertIn("worker", who.stdout)
+        as_json = json.loads(self.msg("who", "--json", scope=self.worktree, env=self.me).stdout)
+        self.assertEqual(as_json["scope"], str(self.scope.resolve()))
+        sent = self.msg("send", "--to", "boss", "--from", "worker", "--message", "hi", scope=self.worktree, env=self.me)
+        message_id = sent.stdout.split("(")[-1].rstrip(")\n")
+        status = self.msg("status", message_id, scope=self.worktree, env=self.me)
+        self.assertIn("delivered", status.stdout)
+        left = self.msg("leave", scope=self.worktree, env=self.me)
+        self.assertEqual(left.returncode, 0, left.stderr)
+        self.assertNotIn("worker", self.msg("who").stdout)
+
+    def test_a_name_that_is_a_member_of_no_scope_gets_nothing_inferred(self) -> None:
+        stranger = self.msg("send", "--to", "boss", "--from", "nobody", "--message", "hi", scope=self.worktree)
+        self.assertEqual(stranger.returncode, 1)
+        self.assertIn("not connected", stranger.stderr)
+        self.assertNotIn("working in", stranger.stderr)
+
+    def test_a_sender_that_is_a_member_of_one_scope_is_found_by_its_name(self) -> None:
+        sent = self.msg("send", "--to", "boss", "--from", "worker", "--message", "hi", scope=self.worktree)
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        self.assertIn("worker is there", sent.stderr)
+
+    def test_a_name_in_two_scopes_is_not_guessed(self) -> None:
+        other = self.root / "other"
+        other.mkdir()
+        self.listen("worker", scope=other)
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        sent = self.msg("send", "--to", "boss", "--from", "worker", "--message", "hi", scope=elsewhere)
+        self.assertEqual(sent.returncode, 1)
+        self.assertIn("not connected", sent.stderr)
+
+    def test_scope_always_wins_and_the_current_scope_is_kept_when_it_holds_the_session(self) -> None:
+        other = self.root / "other"
+        other.mkdir()
+        self.listen("boss", scope=other)
+        sent = self.msg("send", "--scope", str(other), "--to", "boss", "--from", "worker", "--message", "hi",
+                        scope=self.worktree, env=self.me)
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        self.assertNotIn("working in", sent.stderr)
+        inside = self.msg("who", env=self.me)                  # run in self.scope, which holds the session
+        self.assertNotIn("working in", inside.stderr)
+
+    def test_a_broken_adapters_file_does_not_stop_a_command_that_needs_none_of_it(self) -> None:
+        broken = self.root / "adapters.json"
+        broken.write_text("{ not json", encoding="utf-8")
+        sent = self.msg("send", "--to", "boss", "--from", "worker", "--message", "hi", scope=self.worktree,
+                        env={**self.me, "FILO_ADAPTERS": str(broken)})
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+
+
 class WhoAllTests(RuntimeCase):
     def setUp(self) -> None:
         super().setUp()

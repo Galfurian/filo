@@ -147,6 +147,58 @@ def is_member(scope: str, name: str) -> bool:
     return (directory / f"{name}.json").is_file() or (directory / f"{name}.reg").is_file()
 
 
+def my_sessions() -> set[tuple[str, str]]:
+    """The (client, session id) of the registered client that this process runs in, from its environment."""
+    try:
+        known = adapters()
+    except UserError:    # a broken adapters file must not stop a command that does not need it
+        return set()
+    return {(adapter.client, os.environ[adapter.id_env]) for adapter in known.values()
+            if adapter.id_env and os.environ.get(adapter.id_env)}
+
+
+def holds_session(scope: str, sessions: set[tuple[str, str]]) -> bool:
+    """Whether one of ``sessions`` is registered in ``scope``. Like is_member, it only reads."""
+    digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:16]
+    for path in (runtime_root() / digest).glob("*.reg"):
+        try:
+            info = read_object(path)
+            if (str(info["client"]), str(info["session"])) in sessions:
+                return True
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return False
+
+
+def resolve_scope(raw: str | None, sender: str | None = None) -> str:
+    """The scope a command works in. ``--scope`` (``raw``) wins. Otherwise it is the scope of the current
+    directory, except that a session which is registered in another scope stays there, and so does a
+    sender (``--from``) that is a member of one, when the shell of the session is in some other
+    directory, for example in a git worktree of the project. It is never a guess: the one other scope
+    that holds the session or the name, and not two."""
+    here = canonical_scope(raw)
+    if raw is not None:
+        return here
+    sessions = my_sessions()
+    if sessions and holds_session(here, sessions):
+        return here
+    if sessions:
+        found = [scope for scope in known_scopes() if scope != here and holds_session(scope, sessions)]
+        if len(found) == 1:
+            return _moved(here, found[0], "this session is registered there")
+    if sender and not is_member(here, sender):
+        found = [scope for scope in known_scopes() if scope != here and is_member(scope, sender)]
+        if len(found) == 1:
+            return _moved(here, found[0], f"{sender} is there")
+    return here
+
+
+def _moved(here: str, scope: str, why: str) -> str:
+    print(f"filo: working in {display_scope(scope)}, not in {display_scope(here)}: {why} "
+          f"(--scope chooses another)", file=sys.stderr)
+    return scope
+
+
 def current_home(sender: str, target: str) -> str | None:
     """The scope that the sender of a message belongs to, which is where it can be answered.
 
@@ -1030,7 +1082,7 @@ def register(args: argparse.Namespace) -> int:
 
 def rename(args: argparse.Namespace) -> int:
     """Give a registered session another name. A listener changes its name by joining again."""
-    scope = canonical_scope(args.scope)
+    scope = resolve_scope(args.scope)
     old, new = valid_name(args.old, "rename"), valid_name(args.new, "rename")
     found = [row for row in read_registrations(scope) if row.name == old]
     if not found:
@@ -1106,7 +1158,7 @@ def forget_registration(scope: str, row: Registration) -> None:
 
 def leave(args: argparse.Namespace) -> int:
     """Take a registered session or a listener out of the pool."""
-    scope = canonical_scope(args.scope)
+    scope = resolve_scope(args.scope)
     rows = read_registrations(scope)
     if args.chosen:
         name = valid_name(args.chosen, "--name")
@@ -1717,14 +1769,17 @@ def who_command(args: argparse.Namespace, scope: str | None) -> int:
     assert scope is not None
     participants = participant_rows(scope)
     registered = live_registrations(scope)
+    shown = args.scope or str(Path.cwd())
+    if scope != canonical_scope(args.scope):    # the session is in another scope than the directory
+        shown = display_scope(scope)
     if args.json:
         print(json.dumps({
-            "scope": args.scope or str(Path.cwd()),
+            "scope": shown,
             "participants": [asdict(row) for row in participants],
             "registered": registered_rows(registered),
         }), flush=True)
         return 0
-    print_rows(participants, f"connected to {args.scope or Path.cwd()}:", registered)
+    print_rows(participants, f"connected to {shown}:", registered)
     update_notice()
     return 0
 
@@ -1853,12 +1908,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "who":
             if args.all and args.scope:
                 raise UserError("who: --all lists every scope, so it does not take --scope")
-            return who_command(args, None if args.all else canonical_scope(args.scope))
-        scope = canonical_scope(args.scope)
+            return who_command(args, None if args.all else resolve_scope(args.scope))
+        if args.command == "watch":
+            return watch_command(args, canonical_scope(args.scope))
+        scope = resolve_scope(args.scope, valid_name(args.sender, "--from") if args.command == "send" else None)
         if args.command == "show":
             return show_command(args, scope)
-        if args.command == "watch":
-            return watch_command(args, scope)
         if args.command == "status":
             print(message_status(scope, args.id))
             return 0
