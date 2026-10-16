@@ -124,14 +124,15 @@ await leaveWith("m1");
 
 // a message that the client refuses is not lost: it is tried again
 assert.match(await joinWith("e1", "eager"), /Joined the pool as eager\./);
-await wait(100);
 failNext = true;
 const attempts = sent.length;
-await idle("e1");
-await wait(100);
-assert.equal(sent.length, attempts, "the first try was refused");
-await idle("e1");
-await until(() => sent.length === attempts + 1, "the second try");
+const end = Date.now() + 5000;
+while (sent.length === attempts && Date.now() < end) { // the message may not have come yet: say "idle" until it is handed over
+  await idle("e1");
+  await wait(50);
+}
+assert.equal(failNext, false, "the first try was refused");
+assert.equal(sent.length, attempts + 1, "and the second one was not");
 assert.match(sent.at(-1).body.parts[0].text, /Message from boss: first thing/);
 await leaveWith("e1");
 
