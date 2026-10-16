@@ -91,8 +91,10 @@ check `get.sh` with them first if that matters to you.
 A release has the archive, `filo-X.tar.gz.sigstore.json` (a Sigstore signature, made without
 a key by the release workflow) and `filo-X.intoto.jsonl` (the build provenance, which says
 the archive was built from that tag by `.github/workflows/release.yml`). It also has
-`get.sh`, with its own signature `get.sh.sigstore.json`; the provenance covers both files.
-To check them:
+`get.sh`, with its own signature `get.sh.sigstore.json`, and `SHA256SUMS` with
+`SHA256SUMS.sigstore.json`; the provenance covers all three files. A release is built only from a
+commit that is on `main`, and the workflow looks at that and at the release notes before it signs
+anything. To check them:
 
 ```sh
 sha256sum -c SHA256SUMS
@@ -102,12 +104,20 @@ cosign verify-blob filo-X.tar.gz --bundle filo-X.tar.gz.sigstore.json \
 cosign verify-blob get.sh --bundle get.sh.sigstore.json \
   --certificate-identity https://github.com/Galfurian/filo/.github/workflows/release.yml@refs/tags/vX \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
+  --certificate-identity https://github.com/Galfurian/filo/.github/workflows/release.yml@refs/tags/vX \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
 gh attestation verify filo-X.tar.gz --repo Galfurian/filo --bundle filo-X.intoto.jsonl
 gh attestation verify get.sh --repo Galfurian/filo --bundle filo-X.intoto.jsonl
 ```
 
 The `get.sh` you checked contains the hash of the archive it installs, so checking it is
-enough to trust what it then downloads.
+enough to trust what it then downloads. `sha256sum -c SHA256SUMS` only tells you that the files
+are the ones that were listed, and is worth more once `SHA256SUMS` itself is verified, as above.
+
+`filo upgrade` does not run any of these checks: it trusts https and the version stamp of the
+`get.sh` that it downloads. If you want an upgrade that is verified, download `get.sh` from the
+release, check it as above and run it yourself.
 
 ## What counts as a vulnerability
 

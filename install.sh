@@ -23,7 +23,10 @@ esac
 printf 'filo, installed from %s\n\nThis will:\n' "$repo_dir"
 links | while IFS="$tab" read -r what target source required command; do
     case $(state "$target" "$source" "$required" "$command") in
-        new)      printf '  - link %s -> %s  (%s)\n' "$target" "$source" "$what" ;;
+        new)
+            [ -d "$(dirname "$target")" ] ||
+                printf '  - create the directory %s, and any parent of it that is missing; uninstall leaves it\n' "$(dirname "$target")"
+            printf '  - link %s -> %s  (%s)\n' "$target" "$source" "$what" ;;
         current)  printf '  - leave %s alone: already linked  (%s)\n' "$target" "$what" ;;
         conflict) printf '  - skip %s: something that is not ours is already there  (%s)\n' "$target" "$what" ;;
         absent)   printf '  - skip %s: no %s directory and no `%s` command, so that client is not installed  (%s)\n' \
