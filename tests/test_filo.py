@@ -2374,3 +2374,47 @@ class SizeTests(RuntimeCase):
         self.assertIsNone(lines.message(timeout=1))
         fits = self.msg("send", "--to", "rx", "--from", "tx", "--stdin", stdin="x" * (4 * 1024 * 1024 - 100_000))
         self.assertEqual(fits.returncode, 0, fits.stderr)
+
+
+class TextTests(RuntimeCase):
+    """A message is text. What cannot be carried as text is refused, and what arrives twice is shown once."""
+
+    def send_bytes(self, *args: bytes, stdin: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), "send", "--to", "rx", "--from", "tx", *args],
+            cwd=self.scope, env=self.environment, input=stdin, capture_output=True, check=False,
+        )
+
+    def test_a_message_that_is_not_utf8_is_refused_and_nothing_is_queued(self) -> None:
+        _, lines, _ = self.listen("rx")
+        sent = self.send_bytes(b"--message", b"bad\xffbyte")
+        self.assertEqual(sent.returncode, 1, sent.stdout)
+        self.assertIn(b"UTF-8", sent.stderr)
+        self.assertNotIn(b"Traceback", sent.stderr)
+        self.assertEqual(list(self.runtime.glob("*/spool/*/*.msg")), [])
+        self.assertIsNone(lines.message(timeout=1))
+
+    def test_a_message_on_standard_input_that_is_not_utf8_is_an_error_and_not_a_traceback(self) -> None:
+        _, lines, _ = self.listen("rx")
+        sent = self.send_bytes(b"--stdin", stdin=b"bad\xffbyte")
+        self.assertEqual(sent.returncode, 1, sent.stdout)
+        self.assertIn(b"UTF-8", sent.stderr)
+        self.assertNotIn(b"Traceback", sent.stderr)
+        self.assertIsNone(lines.message(timeout=1))
+
+    def test_a_message_that_arrives_twice_is_shown_once(self) -> None:
+        # A sender whose wait for the answer ran out sends again through the spool: the same id comes twice.
+        _, lines, _ = self.listen("rx")
+        paths = list(self.runtime.glob("*/rx.sock"))
+        self.assertEqual(len(paths), 1)
+        wire = json.dumps({"op": "message", "id": "0123456789abcdef-abcdef", "from": "tx", "message": "once"}) + "\n"
+        for _ in range(2):
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.settimeout(5)
+                connection.connect(str(paths[0]))
+                connection.sendall(wire.encode())
+                self.assertIn(b'"ok": true', connection.recv(4096).replace(b'":true', b'": true'))
+        first = lines.message(timeout=5)
+        assert first is not None
+        self.assertEqual(first["message"], "once")
+        self.assertIsNone(lines.message(timeout=1), "the same message was shown a second time")

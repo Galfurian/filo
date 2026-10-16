@@ -629,6 +629,15 @@ def preview_event(event: JsonObject, limit: int) -> JsonObject:
     return cut(low)
 
 
+def already_received(scope: str, name: str, message: JsonObject) -> bool:
+    """True for a message that ``name`` kept already. A sender whose wait for the answer ran out sends it
+    again through the spool, and the listener has then both: the same id comes twice."""
+    message_id = message.get("id")
+    if not isinstance(message_id, str) or not MESSAGE_ID.fullmatch(message_id):
+        return False
+    return (scope_directory(scope) / "inbox" / valid_name(name) / f"{message_id}.json").exists()
+
+
 def keep_received(scope: str, name: str, message: JsonObject, peer_pid: int | None = None) -> None:
     """Keep what ``name`` received, so that `filo show` can print it whole and `filo watch` can
     report it. Best effort."""
@@ -1355,6 +1364,8 @@ class Listener:
         self.receive(message, None)
 
     def receive(self, message: JsonObject, peer_pid: int | None) -> None:
+        if already_received(self.scope, self.name, message):
+            return
         keep_received(self.scope, self.name, message, peer_pid)
         self.emit(message_event(self.name, message, peer_pid, self.preview, self.scope))
 
@@ -1868,12 +1879,18 @@ def message_body(args: argparse.Namespace) -> str:
     if args.stdin + (args.message is not None) + (args.text is not None) > 1:
         raise UserError("send: choose one of --stdin, --message or a positional message")
     if args.stdin:
-        body = sys.stdin.read()
+        try:
+            body = sys.stdin.buffer.read().decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise UserError("send: the message on standard input is not UTF-8 text") from exc
     else:
         body = args.message if args.message is not None else (args.text or "")
     if not body:
         raise UserError("send: refusing an empty message")
-    size = len(json.dumps(body, ensure_ascii=False).encode("utf-8", "surrogatepass"))
+    try:
+        size = len(json.dumps(body, ensure_ascii=False).encode("utf-8"))
+    except UnicodeEncodeError as exc:    # argv holds the bytes that are not text as surrogates
+        raise UserError("send: the message has bytes that are not UTF-8 text") from exc
     if size > MAX_BODY:
         raise UserError(f"send: the message is {size:,} bytes and filo carries {MAX_BODY:,} at most; "
                         f"send a file name instead, or split it")
