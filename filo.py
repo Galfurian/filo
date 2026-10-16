@@ -482,7 +482,29 @@ def peer_credentials(connection: socket.socket) -> tuple[int | None, int | None]
 
 # --- listeners ---------------------------------------------------------------
 
+def name_is_held(scope: str, name: str) -> bool:
+    """Whether a listener holds ``name``: it keeps the lock of its name for as long as it lives, a slow or
+    busy one as well as one that is still starting, and the system takes the lock back when it ends, so
+    that this is true of nobody that is gone. False too for a listener of a filo that took no lock."""
+    try:
+        descriptor = os.open(scope_directory(scope) / f"{valid_name(name)}.lock",
+                             os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+    except (OSError, UserError):
+        return False
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return True
+    finally:
+        os.close(descriptor)    # which gives back a lock that this took
+    return False
+
+
 def evict(scope: str, metadata: Path) -> None:
+    """Remove the files of a listener that is gone, unless something holds its name: what is there then
+    belongs to a listener that is slow, or that has only just taken the name."""
+    if name_is_held(scope, metadata.stem):
+        return
     unlink_if_present(metadata)
     try:
         unlink_if_present(socket_path(scope, metadata.stem))
@@ -507,10 +529,10 @@ def listener_present(scope: str, name: str, pid: int) -> bool:
         return reply.get("name") == name and int_field(reply, "pid", -1) == pid
     except PermissionError:
         return True
-    except TimeoutError:
+    except (TimeoutError, BlockingIOError):    # busy, or its queue of connections is full: not gone
         return pid_alive(pid)
     except (OSError, ValueError, TypeError):
-        return False
+        return name_is_held(scope, name)
 
 
 def listener_is_live(scope: str, name: str) -> bool:
@@ -1332,9 +1354,9 @@ class Listener:
         write_metadata(self.metadata, {"name": self.name, "pid": os.getpid(), "started_ns": time.time_ns()})
         mark_known(self.scope, self.name, "listener")
         remember_scope(self.scope)
-        notify(self.scope, self.name, "joined")
         if self.detached:
-            return
+            return    # `detach` tells the others once the command that started this has its answer
+        notify(self.scope, self.name, "joined")
         if self.as_json:
             print(json.dumps({"kind": "joined", "scope": shown_scope, "name": self.name,
                               "pid": os.getpid()}), flush=True)
@@ -1413,10 +1435,12 @@ class Listener:
             return
         self.closed = True
         mark_known(self.scope, self.name, "listener")
-        notify(self.scope, self.name, "left")
+        # Gone first, then said: the others that leave at the same moment find nobody here to wait for,
+        # and so do not each wait out the time of a request that nobody answers.
         self.server.close()
         unlink_if_present(self.socket_file)
         unlink_if_present(self.metadata)
+        notify(self.scope, self.name, "left")
         if self.lock is not None:
             os.close(self.lock)
 
@@ -1450,6 +1474,7 @@ def detach(listener: Listener, shown_scope: str, existing: list[Participant],
             listener.open(shown_scope, existing, registered)
             os.write(ready_write, b"1")
             os.close(ready_write)
+            notify(listener.scope, listener.name, "joined")
             listener.serve()
             status = 0
         finally:
