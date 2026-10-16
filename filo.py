@@ -90,7 +90,6 @@ def known_ttl() -> float:
 
 
 ACK_TTL = 86400.0
-FILE_CLOCK_SLACK_NS = 2_000_000_000    # how far behind a time stamp in the clock a file's time may be
 INBOX_TTL = 86400.0  # how long a listener keeps what it received, for `filo show`
 MIN_PREVIEW = 100
 HOME_LIMIT = 1000  # the longest scope a message may say it comes from
@@ -661,9 +660,11 @@ def already_received(scope: str, name: str, message: JsonObject) -> bool:
     return (scope_directory(scope) / "inbox" / valid_name(name) / f"{message_id}.json").exists()
 
 
-def keep_received(scope: str, name: str, message: JsonObject, peer_pid: int | None = None) -> None:
+def keep_received(scope: str, name: str, message: JsonObject, peer_pid: int | None = None,
+                  listener: tuple[int, int] | None = None) -> None:
     """Keep what ``name`` received, so that `filo show` can print it whole and `filo watch` can
-    report it. Best effort."""
+    report it. Best effort. ``listener`` is the pid of the listener and the number that it gave this message:
+    the order of arrival does not depend on a clock, which can be set back."""
     message_id = message.get("id")
     if not isinstance(message_id, str) or not MESSAGE_ID.fullmatch(message_id):
         return
@@ -678,6 +679,8 @@ def keep_received(scope: str, name: str, message: JsonObject, peer_pid: int | No
             record[key] = value
     if peer_pid is not None:
         record["peer_pid"] = peer_pid
+    if listener is not None:
+        record["listener"], record["seq"] = listener
     try:
         write_metadata(scope_directory(scope) / "inbox" / valid_name(name) / f"{message_id}.json", record)
     except OSError:
@@ -1342,6 +1345,7 @@ class Listener:
         self.stopping = False
         self.preview = preview
         self.next_prune = 0.0
+        self.sequence = 0    # how many messages this listener has received: their order, which no clock gives
         self.scope = scope
         self.parent = parent
         self.name = name
@@ -1393,7 +1397,8 @@ class Listener:
     def receive(self, message: JsonObject, peer_pid: int | None) -> None:
         if already_received(self.scope, self.name, message):
             return
-        keep_received(self.scope, self.name, message, peer_pid)
+        self.sequence += 1
+        keep_received(self.scope, self.name, message, peer_pid, (os.getpid(), self.sequence))
         self.emit(message_event(self.name, message, peer_pid, self.preview, self.scope))
 
     def emit(self, payload: JsonObject) -> None:
@@ -1855,27 +1860,34 @@ def watch_command(args: argparse.Namespace, scope: str) -> int:
                         f"start it with `filo join --as {name} --detach --parent PID`") from None
     inbox = scope_directory(scope) / "inbox" / name
     cursor = inbox / ".cursor"
-    last = watch_cursor(cursor, inbox, pid)
+    last, last_seq = watch_cursor(cursor, inbox, pid)
+    looked_at: set[str] = set()    # what was read: a record is read once, and never again
     next_check = 0.0
     while True:
         waiting: list[tuple[int, str, JsonObject]] = []
         for path in inbox.glob("*.json"):
+            if path.stem in looked_at:
+                continue
             try:
-                # What came before the last one printed has an older file, give or take a clock tick.
-                if path.stat().st_mtime_ns < last - FILE_CLOCK_SLACK_NS:
-                    continue
                 record = read_object(path)
                 received = int_field(record, "received_ns", 0)
             except (OSError, ValueError, TypeError):
                 continue
-            if received > last and received >= started:    # an earlier listener's are not for this one
+            looked_at.add(path.stem)
+            if "seq" in record:
+                # Numbered by the listener that received it, so the order and what is new need no clock.
+                if record.get("listener") != pid or int_field(record, "seq", 0) <= last_seq:
+                    continue
+                waiting.append((int_field(record, "seq", 0), path.stem, record))
+            elif received > last and received >= started:    # from a filo that numbered nothing: by the clock
                 waiting.append((received, path.stem, record))
-        for received, _, record in sorted(waiting, key=lambda item: item[:2]):
+        for _, _, record in sorted(waiting, key=lambda item: item[:2]):
             peer = record.get("peer_pid")
             print(json.dumps(message_event(name, record, peer if isinstance(peer, int) else None,
                                            args.preview, scope), ensure_ascii=False), flush=True)
-            last = received
-            write_metadata(cursor, {"pid": pid, "last_ns": last})
+            last = max(last, int_field(record, "received_ns", 0))
+            last_seq = max(last_seq, int_field(record, "seq", 0))
+            write_metadata(cursor, {"pid": pid, "last_ns": last, "last_seq": last_seq})
         if time.monotonic() >= next_check:
             if not listener_present(scope, name, pid):
                 print(json.dumps({"kind": "ended", "name": name, "reason": "the listener is gone"}), flush=True)
@@ -1884,21 +1896,39 @@ def watch_command(args: argparse.Namespace, scope: str) -> int:
         time.sleep(0.25)
 
 
-def watch_cursor(cursor: Path, inbox: Path, pid: int) -> int:
-    """When the last message that a watch of this listener printed was received, or 0.
+def watch_cursor(cursor: Path, inbox: Path, pid: int) -> tuple[int, int]:
+    """Where the last watch of this listener stopped: when the last message that it printed was received
+    (for records that the listener did not number) and the number of the last one that it printed.
 
-    The cursor says when, not which id: an id is made by the sender before it delivers, so a message
-    that was slow, or that came through the spool, can have an older id than one that arrived before it.
-    A cursor written by an older filo holds that id, and when it was received is in the inbox."""
+    The cursor says when and which number, not which id: an id is made by the sender before it delivers, so
+    a message that was slow, or that came through the spool, can have an older id than one that arrived
+    before it. A cursor written by an older filo holds that id, and when it was received is in the inbox."""
     try:
         saved = read_object(cursor)
         if saved.get("pid") != pid:
-            return 0
+            return 0, 0
+        if "last_ns" in saved and "last_seq" in saved:
+            return int_field(saved, "last_ns", 0), int_field(saved, "last_seq", 0)
         if "last_ns" in saved:
-            return int_field(saved, "last_ns", 0)
-        return int_field(read_object(inbox / f"{saved.get('last', '')}.json"), "received_ns", 0)
+            when = int_field(saved, "last_ns", 0)
+        else:
+            when = int_field(read_object(inbox / f"{saved.get('last', '')}.json"), "received_ns", 0)
+        return when, last_numbered(inbox, pid, when)    # a cursor of a filo before the numbers: find where it was
     except (OSError, ValueError, TypeError):
-        return 0
+        return 0, 0
+
+
+def last_numbered(inbox: Path, pid: int, until_ns: int) -> int:
+    """The number of the last message that the listener ``pid`` had received at ``until_ns``."""
+    found = 0
+    for path in inbox.glob("*.json"):
+        try:
+            record = read_object(path)
+        except (OSError, ValueError):
+            continue
+        if record.get("listener") == pid and int_field(record, "received_ns", 0) <= until_ns:
+            found = max(found, int_field(record, "seq", 0))
+    return found
 
 
 def show_command(args: argparse.Namespace, scope: str) -> int:
