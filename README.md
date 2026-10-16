@@ -246,6 +246,9 @@ travel with the skill link, so they need no install of their own.
   stop that process too.
 - **`the message is N bytes and filo carries … at most`**: a message is limited to about 4 MB
   of text. Put a longer one in a file and send its name.
+- **`… not UTF-8 text`**: a message is text. `send` refuses bytes that are not UTF-8 (a binary file
+  on standard input, for example) instead of queueing something that cannot be shown. Send the name
+  of the file, or encode it first.
 - **`the socket path is too long`**: a Unix socket path has a limit (103 bytes on macOS,
   107 on Linux). Set `FILO_DIR` to a shorter directory.
 - In a bug report, give `filo --version` and the versions of the clients.
