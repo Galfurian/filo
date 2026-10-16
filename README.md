@@ -240,8 +240,10 @@ travel with the skill link, so they need no install of their own.
 - **A message looks cut off**: the Monitor shows only the start of a long line. `filo show ID`
   prints the whole message.
 - **agy** must run `filo register` from inside its own session, because it copies the
-  session's address and token. **OpenCode** needs a restart after `./install.sh`, so that
-  it loads the plugin.
+  session's address and token. **OpenCode** needs a restart after `./install.sh` or after the
+  plugin changes, so that it loads the plugin. OpenCode 2 keeps a background service
+  (`opencode serve --service`) that holds the plugin: stopping the terminal is not enough,
+  stop that process too.
 - **`the message is N bytes and filo carries … at most`**: a message is limited to about 4 MB
   of text. Put a longer one in a file and send its name.
 - **`the socket path is too long`**: a Unix socket path has a limit (103 bytes on macOS,
@@ -330,7 +332,7 @@ and running sessions are found with `lsof`; where a system offers neither, filo 
 forget a session it cannot check, and relies on the private runtime directory.
 
 **Clients.** Tried with Claude Code 2.1.296, Codex 0.162.1, Antigravity CLI (agy) 1.3.4 and OpenCode
-1.18.31. Codex is reached with `codex queue`. The agy and OpenCode integrations use
+1.18.31 and 2.0.31. Codex is reached with `codex queue`. The agy and OpenCode integrations use
 interfaces that can change in an update: for agy, `agentapi` and the `ANTIGRAVITY_*`
 variables, which were found by inspecting the CLI and not in documentation; for
 OpenCode, the plugin API. If a client updates and delivery stops, that is the first
