@@ -13,8 +13,10 @@ import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 
 const FILO = process.env.FILO_BIN || "filo";
-const WORD = /^[A-Za-z0-9_.-]+$/;
+const WORD = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/; // never a leading "-": filo would take it for an option
 const POLL_MS = 1500;
+const JOIN_MS = 30000; // what `filo join` may take to answer: on macOS it can look at the process table
+const MAX_FAILURES = 5; // tries to hand a message to OpenCode 1 before it is given up
 
 // What a listener's message looks like to the session that receives it.
 const render = (event) => {
@@ -23,16 +25,25 @@ const render = (event) => {
   return `[filo] Message from ${event.from}${outside}: ${event.message}${reply}`;
 };
 
+// What a session is told when its listener ends without the session having asked.
+const ended = (state, reason) =>
+  `[filo] The listener of ${state.name} ended${reason ? `: ${reason}` : ""}. Messages no longer reach this session. ` +
+  "Tell the user, who can run /filo again; do not try to join yourself.";
+
 // The part both versions share: one `filo join` listener per session. `onMessage` is how a
-// version puts what the listener hears into the session.
-const pool = ({ directory, onMessage }) => {
+// version puts what the listener hears into the session, and `onEnded` how it says that the
+// listener went away on its own.
+const pool = ({ directory, onMessage, onEnded }) => {
   const sessions = new Map(); // sessionID -> { name, child, busy, queue }
+  const pending = new Map(); // sessionID -> the same, for a join that has not answered yet
   const typed = new Map(); // sessionID -> what the user typed after /filo
 
+  // A join that is not answered yet is stopped as well: it would be a listener that nothing could end.
   const stop = (sessionID) => {
-    const state = sessions.get(sessionID);
+    const state = sessions.get(sessionID) ?? pending.get(sessionID);
     if (!state) return false;
     sessions.delete(sessionID);
+    state.stopped = true;
     state.child.kill("SIGTERM");
     return true;
   };
@@ -44,7 +55,8 @@ const pool = ({ directory, onMessage }) => {
         stdio: ["ignore", "pipe", "pipe"],
       });
       // The turn that runs filo_join is itself busy, so early messages wait for it to end.
-      const state = { name, child, busy: true, queue: [] };
+      const state = { name, child, busy: true, queue: [], stopped: false };
+      pending.set(sessionID, state);
       let joinedName = null;
       let settled = false;
       let errors = "";
@@ -52,17 +64,24 @@ const pool = ({ directory, onMessage }) => {
         if (!settled) {
           settled = true;
           clearTimeout(timer);
+          if (pending.get(sessionID) === state) pending.delete(sessionID);
           action();
         }
       };
-      const timer = setTimeout(() => finish(() => { child.kill("SIGTERM"); reject(new Error("filo did not answer in 10 seconds")); }), 10000);
+      const timer = setTimeout(() => finish(() => { child.kill("SIGTERM"); reject(new Error(`filo did not answer in ${JOIN_MS / 1000} seconds`)); }), JOIN_MS);
       child.stderr.on("data", (chunk) => { errors += chunk; });
       child.on("error", (error) => finish(() => reject(new Error(`cannot run ${FILO}: ${error.message}`))));
       child.on("exit", () => {
-        if (sessions.get(sessionID) === state) sessions.delete(sessionID);
-        finish(() => reject(new Error(errors.trim() || "filo join ended")));
+        const live = sessions.get(sessionID) === state;
+        if (live) sessions.delete(sessionID);
+        if (settled) {
+          if (live) onEnded(sessionID, state, errors.trim()); // it was in the pool and nobody asked it to leave
+        } else {
+          finish(() => reject(new Error(state.stopped ? "the join was cancelled" : errors.trim() || "filo join ended")));
+        }
       });
       createInterface({ input: child.stdout }).on("line", (line) => {
+        if (state.stopped) return;
         let event;
         try { event = JSON.parse(line); } catch { return; }
         if (event.kind === "joined") {
@@ -83,12 +102,13 @@ const pool = ({ directory, onMessage }) => {
   const join = async (sessionID, words) => {
     const existing = sessions.get(sessionID);
     if (existing) return `This session is already in the pool as ${existing.name}. Tell the user, and stop.`;
+    if (pending.has(sessionID)) return "This session is already joining the pool. Tell the user, and stop.";
     if (words.length > 2 || !words.every((word) => WORD.test(word))) {
       return `The arguments after /filo must be "PROFILE" or "PROFILE NAME". Tell the user, and stop.`;
     }
     let profile = null;
     if (words[0]) {
-      const found = spawnSync(FILO, ["profile", words[0]], { cwd: directory, encoding: "utf8" });
+      const found = spawnSync(FILO, ["profile", words[0]], { cwd: directory, encoding: "utf8", timeout: 5000 });
       if (found.status === 0) profile = { name: words[0], text: found.stdout.trim() };
       else if (words.length === 2) return `There is no profile "${words[0]}". Tell the user, and stop.`;
     }
@@ -131,34 +151,49 @@ const server = async ({ client, directory }) => {
   // A message waits while the session works, then all that waited go in one prompt.
   const flush = async (sessionID, state) => {
     if (state.busy || state.queue.length === 0) return;
-    const text = state.queue.splice(0).join("\n\n");
+    const texts = state.queue.splice(0);
     state.busy = true;
     try {
-      await client.session.promptAsync({ path: { id: sessionID }, body: { parts: [{ type: "text", text }] } });
+      // the client may answer with an error and not throw it
+      const answer = await client.session.promptAsync({ path: { id: sessionID }, body: { parts: [{ type: "text", text: texts.join("\n\n") }] } });
+      if (answer?.error) throw new Error(JSON.stringify(answer.error));
+      state.failures = 0;
     } catch (error) {
       state.busy = false;
-      state.queue.unshift(text);
-      note("error", `could not deliver to ${state.name}: ${error}`);
+      state.failures = (state.failures ?? 0) + 1;
+      if (state.failures < MAX_FAILURES) {
+        state.queue.unshift(...texts);
+        note("error", `could not deliver to ${state.name}: ${error}`);
+      } else {
+        note("error", `gave up delivering ${texts.length} message(s) to ${state.name}: ${error}`);
+      }
     }
   };
 
+  const farewells = new Map(); // sessionID -> the state of a listener that ended, with what its session is told
   const { sessions, typed, join, leave, stop } = pool({
     directory,
     onMessage: (sessionID, state, event) => {
       state.queue.push(render(event));
       void flush(sessionID, state);
     },
+    onEnded: (sessionID, state, reason) => {
+      state.queue.push(ended(state, reason));
+      farewells.set(sessionID, state);
+      void flush(sessionID, state);
+    },
   });
 
   // Events can be missed, so a slow poll also notices a session that went idle.
   const timer = setInterval(async () => {
-    const waiting = [...sessions].filter(([, state]) => state.queue.length > 0);
+    const waiting = [...sessions, ...farewells].filter(([, state]) => state.queue.length > 0);
     if (waiting.length === 0) return;
     let working = {};
     try { working = (await client.session.status()).data ?? {}; } catch { return; }
     for (const [sessionID, state] of waiting) {
       if (!working[sessionID]) state.busy = false;
-      void flush(sessionID, state);
+      await flush(sessionID, state);
+      if (state.queue.length === 0 && farewells.get(sessionID) === state) farewells.delete(sessionID);
     }
   }, POLL_MS);
   timer.unref();
@@ -170,7 +205,7 @@ const server = async ({ client, directory }) => {
 
     event: async ({ event }) => {
       const sessionID = event.properties?.sessionID;
-      const state = sessions.get(sessionID);
+      const state = sessions.get(sessionID) ?? farewells.get(sessionID);
       if (event.type === "session.deleted") {
         stop(event.properties?.info?.id ?? sessionID);
       } else if (state && event.type === "session.status") {
@@ -208,11 +243,18 @@ const server = async ({ client, directory }) => {
 // the plugin itself, so the session receives the answer as a prompt. The inbox queues a prompt
 // while the session works.
 const setup = async (ctx) => {
+  // What is said to a session waits while /filo is still answering it, so that the session knows its
+  // name and profile before the first message comes.
+  const gates = new Map(); // sessionID -> a promise that is done when the answer to /filo has been given
+  const say = (sessionID, text) =>
+    (gates.get(sessionID) ?? Promise.resolve())
+      .then(() => ctx.session.prompt({ sessionID, text, delivery: "queue" }))
+      .catch((error) => console.error(`filo: could not tell session ${sessionID}: ${error}`));
+
   const { stop, join, leave, sessions } = pool({
     directory: ctx.location.directory,
-    onMessage: (sessionID, _state, event) => {
-      ctx.session.prompt({ sessionID, text: render(event), delivery: "queue" }).catch(() => {});
-    },
+    onMessage: (sessionID, _state, event) => void say(sessionID, render(event)),
+    onEnded: (sessionID, state, reason) => void say(sessionID, ended(state, reason)),
   });
 
   await ctx.command.transform((editor) => {
@@ -220,12 +262,19 @@ const setup = async (ctx) => {
       name: "filo",
       description: "Join the filo pool, optionally with a profile: /filo [profile] [name]",
       execute: async ({ sessionID, prompt, delivery }) => {
-        const answer = await join(sessionID, wordsOf(prompt.text));
-        const text = [
-          "The user ran /filo. Load the `filo` skill if you have not yet, because it says how to reply to messages.",
-          answer,
-        ].join("\n\n");
-        await ctx.session.prompt({ sessionID, text, delivery });
+        let open;
+        gates.set(sessionID, new Promise((done) => { open = done; }));
+        try {
+          const answer = await join(sessionID, wordsOf(prompt.text));
+          const text = [
+            "The user ran /filo. Load the `filo` skill if you have not yet, because it says how to reply to messages.",
+            answer,
+          ].join("\n\n");
+          await ctx.session.prompt({ sessionID, text, delivery });
+        } finally {
+          gates.delete(sessionID);
+          open();
+        }
       },
     });
   });
@@ -251,12 +300,24 @@ const setup = async (ctx) => {
     });
   });
 
+  // The stream can end or fail (the service restarts): without it a deleted session keeps its listener.
   const events = new AbortController();
   void (async () => {
-    for await (const event of ctx.event.subscribe({ signal: events.signal })) {
-      if (event.type === "session.deleted") stop(event.data.sessionID);
+    let pause = 500;
+    while (!events.signal.aborted) {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: events.signal })) {
+          pause = 500;
+          if (event.type === "session.deleted") stop(event.data.sessionID);
+        }
+      } catch (error) {
+        if (!events.signal.aborted) console.error(`filo: the event stream failed: ${error}`);
+      }
+      if (events.signal.aborted) return;
+      await new Promise((done) => { setTimeout(done, pause).unref?.(); });
+      pause = Math.min(pause * 2, 30000);
     }
-  })().catch(() => {});
+  })();
 
   return () => {
     events.abort();
