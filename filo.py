@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -413,7 +414,7 @@ def pid_alive(pid: int) -> bool:
         return False
     try:
         os.kill(pid, 0)
-    except ProcessLookupError:
+    except (ProcessLookupError, OverflowError):    # OverflowError: a number that no process has
         return False
     except PermissionError:
         return True
@@ -831,9 +832,9 @@ def captured_env(adapter: Adapter, env: dict[str, str]) -> dict[str, str]:
 
 def run_delivery(argv: list[str], label: str, env: dict[str, str] | None = None) -> None:
     try:
-        result = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=False,
+        result = subprocess.run(argv, capture_output=True, text=True, errors="replace", timeout=30, check=False,
                                 env={**os.environ, **env} if env else None)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:    # ValueError: a NUL in an argument
         raise UserError(f"send: {label} failed: {exc}") from exc
     if result.returncode != 0:
         raise UserError(f"send: {label} failed: {(result.stderr or result.stdout).strip()}")
@@ -935,6 +936,9 @@ def sandboxed() -> bool:
     return bool(os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED") or os.environ.get("FILO_NO_PRUNE"))
 
 
+COMM_LIMIT = 15    # characters of a process's name in /proc/PID/comm
+
+
 def parse_lsof(output: str, command: str) -> list[str]:
     """The ``n`` (path) lines that belong to processes called ``command`` in ``lsof -Fcn`` output."""
     found: list[str] = []
@@ -962,7 +966,8 @@ def process_cwds(command: str) -> list[str] | None:
             if not entry.name.isdigit():
                 continue
             try:
-                if (entry / "comm").read_text(encoding="utf-8").strip() == command:
+                # the kernel keeps 15 characters of a process's name, so a longer one is never equal to it
+                if (entry / "comm").read_text(encoding="utf-8").strip() == command[:COMM_LIMIT]:
                     found.append(os.readlink(entry / "cwd"))
             except OSError:
                 continue
@@ -1505,7 +1510,7 @@ def detach(listener: Listener, shown_scope: str, existing: list[Participant],
 def join(args: argparse.Namespace) -> int:
     if args.preview is not None and args.preview < MIN_PREVIEW:
         raise UserError(f"join: --preview must be at least {MIN_PREVIEW}")
-    if args.parent is not None and args.parent <= 0:
+    if args.parent is not None and not 0 < args.parent < 2**31:
         raise UserError("join: --parent must be the id of a process, above 0")
     if args.detach:
         if args.parent is None:
@@ -1564,15 +1569,28 @@ def version_tuple(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in text.split("."))
 
 
+class KeepMethod(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect with the method of the request. Before Python 3.13 a HEAD became a GET on the way,
+    and the check for a new version then read the page of the release."""
+
+    def redirect_request(self, req: urllib.request.Request, fp: Any, code: int, msg: str,
+                         headers: Any, newurl: str) -> urllib.request.Request | None:
+        followed = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if followed is not None and req.get_method() == "HEAD":
+            followed.method = "HEAD"
+        return followed
+
+
 def fetch_url(url: str, method: str = "GET", timeout: float = 10.0) -> tuple[str, bytes]:
     """Fetch a URL and return the address it ended at and up to a megabyte of its body."""
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, method=method), timeout=timeout) as response:
+        with urllib.request.build_opener(KeepMethod).open(urllib.request.Request(url, method=method),
+                                                          timeout=timeout) as response:
             final = cast(str, response.geturl())
             if not secure_url(final):
                 raise UserError(f"upgrade: {url} led to {final}, which is not https")
             return final, cast(bytes, response.read(1_000_000))
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
         raise UserError(f"upgrade: could not fetch {url}: {exc}") from exc
 
 
@@ -1588,7 +1606,9 @@ def latest_version(timeout: float = 10.0) -> str:
 def install_directory() -> Path:
     """Where this filo lives, as the links made by the installer name it (links not resolved)."""
     script = Path(os.path.abspath(__file__))
-    if script.is_symlink():
+    for _ in range(16):    # a link to a link, as when the installer's link is itself linked from a bin directory
+        if not script.is_symlink():
+            break
         script = Path(os.path.abspath(script.parent / os.readlink(script)))
     return script.parent
 
@@ -1966,6 +1986,8 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as exc:    # the file system or a socket said no: that is a message, not a traceback
         print(f"{APP}: {exc.strerror or exc}" + (f": {exc.filename}" if exc.filename else ""), file=sys.stderr)
         return 1
+    except KeyboardInterrupt:    # Ctrl-C ends a command that waits (watch, send --stdin, a question), quietly
+        return 130
 
 
 if __name__ == "__main__":
