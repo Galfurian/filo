@@ -1145,6 +1145,27 @@ class WorkflowTests(unittest.TestCase):
                 self.assertIn("--require-hashes", command, f"{workflow.name}: pip install without hash checking")
 
 
+class ReleaseWorkflowTests(unittest.TestCase):
+    """What a release checks has to be checked before it signs: signing writes to a public log."""
+
+    def test_a_release_looks_at_its_tag_and_its_notes_before_signing_and_builds_from_a_commit_on_main(self) -> None:
+        text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        signing = text.index("cosign sign-blob")
+        for needed in ("merge-base --is-ancestor \"$GITHUB_SHA\" origin/main", 'test -f "docs/releases/$GITHUB_REF_NAME.md"',
+                       'test "v$version" = "$GITHUB_REF_NAME"'):
+            self.assertIn(needed, text)
+            self.assertLess(text.index(needed), signing, f"{needed} comes after the signing")
+        self.assertIn("fetch-depth: 0", text)
+        self.assertIn('"$GITHUB_SHA"\n', text.split("git archive", 1)[1].split("\n", 1)[0] + "\n")
+        self.assertIn("SHA256SUMS.sigstore.json", text)
+
+    def test_the_checks_are_bounded_and_one_failure_does_not_hide_another(self) -> None:
+        text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertEqual(text.count("timeout-minutes:"), 2)
+        self.assertIn("fail-fast: false", text)
+        self.assertIn("branches: [main]", text)
+
+
 class VersionTests(unittest.TestCase):
     def test_the_command_reports_the_version_the_package_declares(self) -> None:
         match = re.search(r'(?m)^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(encoding="utf-8"))
@@ -1256,6 +1277,27 @@ class InstallerTests(unittest.TestCase):
         mode = SCRIPT.stat().st_mode
         self.assertEqual(self.uninstall("--dry-run").returncode, 0)
         self.assertEqual(SCRIPT.stat().st_mode, mode)
+
+    def test_a_directory_that_install_will_make_is_announced_before(self) -> None:
+        dry = self.install("--dry-run")
+        self.assertIn(f"create the directory {self.bin}", dry.stdout)
+        self.assertIn(f"create the directory {self.opencode / 'plugins'}", dry.stdout)
+        self.assertNotIn(f"create the directory {self.claude.parent},", dry.stdout)    # it is there already
+        self.install()
+        again = self.install("--dry-run")
+        self.assertNotIn("create the directory", again.stdout)    # nothing left to make
+
+    def test_a_checkout_that_is_reached_through_a_link_is_still_the_checkout(self) -> None:
+        alias = Path(self.base.name) / "alias"
+        alias.symlink_to(ROOT)
+        installed = subprocess.run([SHELL, str(alias / "install.sh")], env=self.environment, text=True,
+                                   capture_output=True, check=False)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        self.assertEqual(os.readlink(self.bin / "filo"), str(alias / "filo.py"))
+        self.assertIn("already linked", self.install().stdout)    # by the other name of the same checkout
+        self.assertEqual(self.uninstall().returncode, 0)
+        self.assertFalse((self.bin / "filo").is_symlink())
+        self.assertFalse((self.claude / "filo").is_symlink())
 
     def test_a_client_that_is_not_installed_gets_no_directory(self) -> None:
         self.agy.parent.rmdir()
@@ -2073,6 +2115,29 @@ class GetScriptTests(unittest.TestCase):
     def get(self, *args: str, script: Path | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run([SHELL, str(script or self.script), *args], env=self.environment,
                               text=True, capture_output=True, check=False, timeout=60)
+
+    def test_a_directory_named_with_a_slash_or_a_dot_at_its_end_is_the_same_directory(self) -> None:
+        for ending in ("/", "/.", "//"):
+            with self.subTest(ending=ending):
+                self.environment["FILO_HOME"] = f"{self.home}{ending}"
+                result = self.get()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue((self.home / ".filo-release").is_file())
+                self.assertEqual(self.get("uninstall").returncode, 0)
+                self.assertFalse(self.home.exists())
+
+    def test_a_directory_with_dots_in_it_is_refused(self) -> None:
+        self.environment["FILO_HOME"] = f"{self.home}/../elsewhere"
+        refused = self.get()
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("must not have ..", refused.stdout + refused.stderr)
+
+    def test_a_version_that_is_not_three_numbers_is_refused(self) -> None:
+        for version in ("1.2.3/../x", "1.2.3.4", "1..3", ".1.2", "1.2.3."):
+            with self.subTest(version=version):
+                refused = self.get(script=self.stamp(version=version, sha=self.sha, name="odd.sh"))
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn("not made by a release", refused.stdout + refused.stderr)
 
     def test_install_checks_the_hash_unpacks_and_links_and_uninstall_removes_it_all(self) -> None:
         result = self.get()

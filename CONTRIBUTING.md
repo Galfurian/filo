@@ -52,7 +52,8 @@ with the code, and update the README and `skills/filo/SKILL.md` when behaviour c
 skill is what the agents read.
 
 Releases are tags: raise `version` in `pyproject.toml` and `__version__` in `filo.py`
-together, write `docs/releases/vX.Y.Z.md`, and tag `vX.Y.Z`. The release workflow stamps
+together, write `docs/releases/vX.Y.Z.md`, merge it, and tag `vX.Y.Z` on `main`: the release workflow refuses a
+tag that is not on `main`, whose notes are missing or that is not the version in `pyproject.toml`, before it signs anything. The release workflow stamps
 `get.sh` with the version and the hash of the archive (the two lines that hold `@VERSION@` and
 `@SHA256@`; keep them as they are) and attaches it, signed, to the release.
 

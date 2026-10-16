@@ -28,9 +28,23 @@ links() {
         "the /filo command for OpenCode" "$opencode_dir/commands/filo.md" "$repo_dir/commands/opencode/filo.md" "$opencode_dir" opencode
 }
 
-# True when $1 is a symlink that points at $2.
+# $1 as an absolute path with every link in its directories followed; it need not exist itself.
+physical() {
+    _dir=$(cd -P -- "$(dirname -- "$1")" 2>/dev/null && pwd -P) || return 1
+    printf '%s/%s\n' "$_dir" "${1##*/}"
+}
+
+# True when $1 is a symlink that points at $2, by the same name or by the same place (a checkout that
+# is reached through a link of its own is the same checkout).
 owned() {
-    [ -L "$1" ] && [ "$(readlink "$1")" = "$2" ]
+    [ -L "$1" ] || return 1
+    _target=$(readlink "$1")
+    [ "$_target" = "$2" ] && return 0
+    case $_target in
+        /*) ;;
+        *) _target="$(dirname -- "$1")/$_target" ;;
+    esac
+    _here=$(physical "$_target") && _there=$(physical "$2") && [ "$_here" = "$_there" ]
 }
 
 # What is at $1 compared with what filo wants there ($2), for the client whose

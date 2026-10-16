@@ -2,6 +2,7 @@ name: ci
 
 on:
   push:
+    branches: [main] # a branch with a pull request is checked by that, and not twice
   pull_request:
 
 permissions:
@@ -9,12 +10,14 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }} # what lands on main is always checked whole
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 20 # the tests start listeners: a hang would run for six hours
     strategy:
+      fail-fast: false # one version failing does not hide how the other does
       matrix:
         python: ["3.10", "3.12"]
     steps:
@@ -35,6 +38,7 @@ jobs:
 
   test-macos:
     runs-on: macos-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

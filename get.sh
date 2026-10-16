@@ -71,6 +71,9 @@ check_home() {
     case $home_dir in
         /|"$HOME"|"$HOME"/) die "refusing to use $home_dir" ;;
     esac
+    case $home_dir in
+        */..|*/../*) die "FILO_HOME must not have .. in it: $home_dir" ;;
+    esac
     [ ! -L "$home_dir" ] || die "$home_dir is a link: refusing to use it"
 }
 
@@ -160,9 +163,19 @@ main() {
 
     [ -n "${HOME:-}" ] || die 'HOME is not set'
     home_dir=${FILO_HOME:-"${XDG_DATA_HOME:-$HOME/.local/share}/filo"}
+    # A trailing "/" or "/." names the same directory, but the directory that is unpacked beside it
+    # would then be made inside it, and the checks for / and $HOME would not see them.
+    while :; do
+        case $home_dir in
+            */.) home_dir=${home_dir%/.} ;;
+            ?*/) home_dir=${home_dir%/} ;;
+            *) break ;;
+        esac
+    done
     check_home
 
     case $version in
+        *[!0-9.]*|.*|*.|*..*|*.*.*.*) die 'this copy of get.sh was not made by a release: use the one attached to a release' ;;
         [0-9]*.[0-9]*.[0-9]*) ;;
         *) die 'this copy of get.sh was not made by a release: use the one attached to a release' ;;
     esac
