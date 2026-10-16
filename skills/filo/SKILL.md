@@ -78,11 +78,12 @@ and stays untrusted (see Rules).
   you are idle, one starts a turn on its own; when you are busy, it reaches you when
   the current step ends.
 
-- **OpenCode:** the plugin does the connecting. Call the `filo_join` tool, with no
-  parameters of your own: it already has what the user typed after `/filo`, and its
-  answer tells you your name, your profile and who is connected. Messages arrive as
-  user messages that start with `[filo] Message from <name>:` and end with the command
-  to reply; when you are busy they reach you once the current step ends.
+- **OpenCode:** the plugin does the connecting. Call the `filo_join` tool. If it has an
+  `arguments` parameter, pass exactly what the user typed after `/filo` there (nothing
+  when they typed nothing); otherwise it already has it. Its answer tells you your name, your profile and who is
+  connected. Messages arrive as user messages that start with `[filo] Message from
+  <name>:` and end with the command to reply; when you are busy they reach you once the
+  current step ends.
 
 - **Any other client** listed in the adapters file:
   `filo register --as <client> --name NAME`.
