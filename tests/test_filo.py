@@ -1951,6 +1951,54 @@ class DetachedListenerTests(RuntimeCase):
         assert late is not None
         self.assertEqual(late["message"], "sent first, arrived last")
 
+    def test_a_message_is_printed_when_the_clock_of_the_system_went_back_after_the_listener_started(self) -> None:
+        # What the listener stamps as its start and as the arrival of a message are two readings of a clock that
+        # can be set back (a time service does it), and then the message looks older than the listener.
+        self.detach("boss", self.parent())
+        [metadata_file] = self.runtime.glob("*/boss.json")
+        metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+        metadata["started_ns"] = time.time_ns() + 3_600 * 1_000_000_000
+        metadata_file.write_text(json.dumps(metadata), encoding="utf-8")
+        _, lines = self.watch("boss")
+        time.sleep(0.5)
+        self.msg("send", "--to", "boss", "--from", "me", "--message", "after the clock went back")
+        shown = lines.message()
+        assert shown is not None
+        self.assertEqual(shown["message"], "after the clock went back")
+
+    def test_a_restarted_watch_does_not_skip_what_the_clock_stamped_earlier_than_its_cursor(self) -> None:
+        self.detach("boss", self.parent())
+        first, lines = self.watch("boss")
+        time.sleep(0.5)
+        self.msg("send", "--to", "boss", "--from", "me", "--message", "one")
+        self.assertIsNotNone(lines.message())
+        self.wait_until(lambda: any(self.runtime.glob("*/inbox/boss/.cursor")), "the watch did not note it")
+        first.terminate()
+        first.wait(timeout=5)
+        [cursor_file] = self.runtime.glob("*/inbox/boss/.cursor")
+        cursor = json.loads(cursor_file.read_text(encoding="utf-8"))
+        cursor["last_ns"] = time.time_ns() + 3_600 * 1_000_000_000    # the clock was set back since
+        cursor_file.write_text(json.dumps(cursor), encoding="utf-8")
+        self.msg("send", "--to", "boss", "--from", "me", "--message", "two")
+        _, again = self.watch("boss")
+        shown = again.message()
+        assert shown is not None
+        self.assertEqual(shown["message"], "two")
+        self.assertIsNone(again.message(timeout=1), "what the first watch printed came again")
+
+    def test_a_record_from_a_filo_that_numbered_nothing_is_still_printed(self) -> None:
+        self.detach("boss", self.parent())
+        [metadata_file] = self.runtime.glob("*/boss.json")
+        inbox = metadata_file.parent / "inbox" / "boss"
+        inbox.mkdir(parents=True, mode=0o700, exist_ok=True)
+        (inbox / "18df0000000000aa-bbbbbb.json").write_text(json.dumps({
+            "id": "18df0000000000aa-bbbbbb", "from": "old", "to": "boss", "message": "from before the numbers",
+            "created_ns": time.time_ns(), "received_ns": time.time_ns()}), encoding="utf-8")
+        _, lines = self.watch("boss")
+        shown = lines.message()
+        assert shown is not None
+        self.assertEqual(shown["message"], "from before the numbers")
+
     def test_a_cursor_written_by_an_older_filo_is_still_understood(self) -> None:
         joined = self.detach("boss", self.parent())
         first, lines = self.watch("boss")
