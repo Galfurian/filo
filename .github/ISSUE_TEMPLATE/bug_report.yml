@@ -46,6 +46,11 @@ body:
     attributes:
       label: Output of `filo who` and of the failing command
       render: shell
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else that might be relevant, such as links, screenshots or workarounds you tried.
   - type: checkboxes
     id: secrets
     attributes:
