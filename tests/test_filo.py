@@ -1195,6 +1195,16 @@ class ReadmeTests(unittest.TestCase):
             self.assertTrue((ROOT / path).is_file(), path)
 
 
+    def test_every_variable_that_the_code_reads_is_in_the_readme(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        sources = [ROOT / "filo.py", ROOT / "get.sh", ROOT / "install.sh", ROOT / "uninstall.sh",
+                   ROOT / "scripts" / "common.sh", ROOT / "plugins" / "opencode" / "filo.js"]
+        used = {name for source in sources for name in re.findall(r"\bFILO_[A-Z_]+\b", source.read_text(encoding="utf-8"))}
+        self.assertIn("FILO_NO_PRUNE", used)    # the search itself finds them
+        for name in sorted(used):
+            self.assertTrue(name in readme, f"{name} is read by the code and the README does not say so")
+
+
 class InstallerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.base = tempfile.TemporaryDirectory()

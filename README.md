@@ -86,8 +86,10 @@ once it has joined. You choose it when you start the session:
 `filo profiles` lists them and `filo profile manager` prints one. The built-in
 profiles are `skills/filo/profiles/*.md`. To add your own, or to replace one, put
 `NAME.md` in `~/.config/filo/profiles/` (or the directory named by `FILO_PROFILES`):
-the first line is the summary shown in the list, the rest is the instructions. A word
-after `/filo` that is not a profile is just a name.
+the first line is the summary shown in the list, the rest is the instructions. `/filo NAME`
+with a name that is not a profile joins under that name and has no profile. `/filo PROFILE NAME`
+needs the profile: when there is none of that name nothing is joined, so that a mistyped role
+does not become a name.
 
 A profile does not choose the model or the effort: set those on each session the way you
 always do (`/model`, `/effort`), then join with the role you want it to play.
@@ -130,7 +132,7 @@ across directories). Sessions in different directories never see each other.
 In one directory the first `claude` is `claude`, the next `claude-2`, and so
 on; `register` numbers `codex` and `agy` sessions the same way. `join --exact`
 fails instead of adding a suffix. `register --name NAME` picks the name, and a
-name that is taken is an error. `rename OLD NEW` changes the name of a
+name that is taken is an error. A name has up to 64 letters, digits, `.`, `_` or `-`. `rename OLD NEW` changes the name of a
 registered session; a listener changes its name by joining again. A registered
 session leaves with `filo leave`, and a listener by stopping or with `filo leave --name`. Address a
 session by its exact name from `filo who`, and use your own exact name in
@@ -196,7 +198,9 @@ To hear about new versions without asking, set `FILO_CHECK_UPDATES=1` in your sh
 with `--json`) and, if a newer release exists, adds one line on stderr:
 ``filo 0.3.0 is available (this is 0.2.0): run `filo upgrade` ``. The answer is kept in
 `~/.cache/filo/latest-version` (`XDG_CACHE_HOME`). Nothing is checked unless you set it.
-`FILO_RELEASES_URL` points both at a mirror, https only.
+`FILO_RELEASES_URL` points the look for a new version and the download of `get.sh` at a
+mirror, https only; `get.sh` itself takes the archive from `FILO_RELEASE_URL` (by default the
+download address of its own release).
 
 **From a checkout.**
 
@@ -276,7 +280,7 @@ depends on the recipient: three routes, shown above and described under
 |---|---|
 | Listening (`join`) | Straight to its socket. |
 | Registered (`register`) | Through the client's adapter, for example `codex queue` or `agentapi send-message`. |
-| Known but away | Into a spool; delivered when a listener with that name joins. Kept for an hour (`FILO_SPOOL_TTL`), names are remembered for a day. |
+| Known but away | Into a spool; delivered when a listener with that name joins. Kept for an hour (`FILO_SPOOL_TTL`), names are remembered for a day (`FILO_KNOWN_TTL`). |
 | Never seen | Error. |
 
 Leaving is not the same for everyone. A listener that stops is only away: messages
@@ -317,7 +321,7 @@ so that you can tell what is going on and what can go wrong.
 |---|---|---|---|
 | Claude | `filo join --detach --parent $CLAUDE_PID`, and a Monitor on `filo watch` | an event that wakes it, with the reply command | the Monitor expires after 30 minutes; start it again, which changes nothing for the others |
 | Codex | `filo register --as codex` (records `$CODEX_THREAD_ID`) | a normal turn, through `codex queue`, even while you type | none |
-| OpenCode | `/filo` runs the plugin, which starts `filo join` for that session | a user message in the same session, through the plugin; the chat is never locked | the plugin adds the tools `filo_join` and `filo_leave` to every OpenCode session; a message that arrives while OpenCode works waits for the step to end |
+| OpenCode | `/filo` runs the plugin, which starts `filo join` for that session | a user message in the same session, through the plugin; the chat is never locked | the plugin adds the tools `filo_join` and `filo_leave` to every OpenCode session; a message that arrives while OpenCode works waits for the step to end (OpenCode 2 keeps it in the session's own queue, OpenCode 1 in the plugin). OpenCode 2 gets `/filo` from the plugin itself; the command file is what OpenCode 1 uses, and in OpenCode 2 it asks the model to call `filo_join` with what you typed (its `arguments`). `FILO_BIN` names the `filo` that the plugin runs, when it is not the first in `PATH` |
 | agy | `filo register --as agy` (records `$ANTIGRAVITY_CONVERSATION_ID`) | a system message, through `agentapi send-message`; the chat is never locked and no second `agy` starts | an idle agy starts a turn on its own when one arrives; a busy one gets it when its current step ends, and it does not interrupt a running command; `register` must run inside agy |
 | Anything else | `filo register --as NAME` | whatever its adapter does, see [Adding another LLM](#adding-another-llm) | |
 
@@ -379,6 +383,12 @@ forgotten when none of that client's processes run in the directory any more; `w
 tell which ones ended, so it keeps all of them: an old registration is better than
 forgetting a session that is alive. For agy it can tell exactly, from the session's own
 address. `who` never deletes a listener it merely cannot probe: a sandboxed or slow one stays.
+`FILO_NO_PRUNE=1` stops filo from looking at the process table at all, as in the Codex sandbox:
+registrations are then kept until `filo leave`.
+
+A listener holds the lock file `NAME.lock` of its name for as long as it lives, and a name is free
+when nothing holds it. What a listener received (`filo show`) and the acknowledgements that
+`filo status` reads are kept for a day.
 
 filo never guesses which session you mean. A client is reached only through a session that
 registered itself, by name; `send --to codex` with nobody registered is an error that says so.

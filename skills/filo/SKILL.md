@@ -18,9 +18,10 @@ name** in `--from`, and address others by their exact name from `filo who`.
 - **Nothing:** join under your client's default name (`claude`, `codex`, `agy`).
 - **`PROFILE` or `PROFILE NAME`**, for example `manager` or `worker w2`: run
   `filo profile PROFILE`. If it prints a profile, follow it from now on. Your name is
-  `NAME`, or `PROFILE` when there is no `NAME`. If it says there is no such profile,
-  the first word is only your name: tell the user that you have no profile.
-  `filo profiles` lists the profiles.
+  `NAME`, or `PROFILE` when there is no `NAME`. If it says there is no such profile and
+  there was only one word, that word is only your name: tell the user that you have no
+  profile. With two words the first has to be a profile: tell the user that there is none
+  of that name, and **do not join**. `filo profiles` lists the profiles.
 - **A sentence**, such as "register as manager": take the role word out of it and
   proceed as above.
 
