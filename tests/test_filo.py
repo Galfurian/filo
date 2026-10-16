@@ -1999,6 +1999,13 @@ class DetachedListenerTests(RuntimeCase):
                 connection.close()
             process.send_signal(signal.SIGCONT)
 
+    def test_ctrl_c_ends_watch_quietly(self) -> None:
+        self.detach("boss", self.parent())
+        process, _ = self.watch("boss")
+        time.sleep(0.5)
+        process.send_signal(signal.SIGINT)
+        self.assertEqual(process.wait(timeout=5), 130)
+
     def test_a_parent_that_is_not_a_process_is_refused(self) -> None:
         # kill(0, 0) and kill(-1, 0) succeed, so such a "parent" would never end and the listener with it
         for parent in ("0", "-1"):
@@ -2158,11 +2165,13 @@ class ReleaseServer:
         self.latest = latest
         self.scripts = scripts
         self.hits: list[str] = []
+        self.methods: list[str] = []
         outer = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def answer(self, send_body: bool) -> None:
                 outer.hits.append(self.path)
+                outer.methods.append(self.command)
                 if self.path == "/releases/latest":
                     self.send_response(302)
                     self.send_header("Location", f"/releases/tag/v{outer.latest}")
@@ -2259,6 +2268,45 @@ class UpgradeTests(unittest.TestCase):
              stdin: int | None = subprocess.DEVNULL) -> subprocess.CompletedProcess[str]:
         return subprocess.run([str(command or self.bin / "filo"), *args], env=env or self.environment,
                               text=True, capture_output=True, check=False, timeout=60, stdin=stdin)
+
+    def test_the_check_for_a_new_version_only_asks_with_head_all_the_way(self) -> None:
+        # Before Python 3.13 a redirect turned the HEAD into a GET, and the page of the release was read
+        self.install_old_release()
+        self.server.methods.clear()
+        self.assertEqual(self.filo("upgrade", "--check").returncode, 0)
+        self.assertEqual(set(self.server.methods), {"HEAD"}, self.server.hits)
+
+    def test_a_server_that_does_not_speak_http_is_an_error_and_not_a_traceback(self) -> None:
+        self.install_old_release()
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        self.addCleanup(listener.close)
+
+        def answer() -> None:
+            while True:
+                try:
+                    connection, _ = listener.accept()
+                except OSError:
+                    return
+                with connection:
+                    connection.recv(4096)
+                    connection.sendall(b"not http at all\r\n\r\n")
+
+        threading.Thread(target=answer, daemon=True).start()
+        env = {**self.environment, "FILO_RELEASES_URL": f"http://127.0.0.1:{listener.getsockname()[1]}"}
+        result = self.filo("upgrade", "--check", env=env)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("could not fetch", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_upgrade_finds_its_directory_through_a_link_to_the_link(self) -> None:
+        self.install_old_release()
+        (self.root / "other").mkdir()
+        (self.root / "other" / "filo").symlink_to(self.bin / "filo")
+        result = self.filo("upgrade", "--yes", command=self.root / "other" / "filo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Dry run: nothing was changed", result.stdout)
 
     def test_upgrade_installs_the_newest_release_through_the_link_the_installer_made(self) -> None:
         self.install_old_release()
@@ -2471,3 +2519,62 @@ class TextTests(RuntimeCase):
         assert first is not None
         self.assertEqual(first["message"], "once")
         self.assertIsNone(lines.message(timeout=1), "the same message was shown a second time")
+
+
+class ErrorTests(RuntimeCase):
+    """What goes wrong is said in a line, and an adapter whose process has a long name is still found."""
+
+    def adapter(self, **fields: object) -> Path:
+        config = self.root / "adapters.json"
+        config.write_text(json.dumps({"gemini": {"id_env": "GEMINI_SESSION", **fields}}), encoding="utf-8")
+        self.environment["FILO_ADAPTERS"] = str(config)
+        return config
+
+    def tool(self, body: str) -> Path:
+        tool = self.root / "tool"
+        tool.write_text(f"#!/usr/bin/env python3\nimport sys\n{body}\n", encoding="utf-8")
+        tool.chmod(0o755)
+        return tool
+
+    def test_an_adapter_whose_process_has_a_long_name_keeps_its_registration(self) -> None:
+        if not Path("/proc").is_dir():
+            self.skipTest("the 15 characters are the kernel's limit in /proc; lsof is used elsewhere")
+        name = "my-long-agent-binary"    # more than the 15 characters that the kernel keeps
+        program = self.root / name
+        sleep = shutil.which("sleep")
+        assert sleep is not None
+        shutil.copy(sleep, program)
+        client = subprocess.Popen([str(program), "120"], cwd=self.scope)
+        self.addCleanup(client.wait)
+        self.addCleanup(client.terminate)
+        time.sleep(0.2)
+        self.adapter(process=name, deliver=["true"])
+        registered = self.msg("register", "--as", "gemini", env={"GEMINI_SESSION": "gem-123456"})
+        self.assertEqual(registered.returncode, 0, registered.stderr)
+        for _ in range(2):    # the first look used to remove it
+            who = json.loads(self.msg("who", "--json").stdout)
+            self.assertEqual([row["name"] for row in who["registered"]], ["gemini"])
+
+    def test_a_message_with_a_nul_is_an_error_for_a_delivery_that_cannot_take_it(self) -> None:
+        self.adapter(deliver=[str(self.tool("")), "{message}"])
+        self.assertEqual(self.msg("register", "--as", "gemini", env={"GEMINI_SESSION": "gem-123456"}).returncode, 0)
+        sent = self.msg("send", "--to", "gemini", "--from", "claude", "--stdin", stdin="a\0b")
+        self.assertEqual(sent.returncode, 1, sent.stdout)
+        self.assertIn("failed", sent.stderr)
+        self.assertNotIn("Traceback", sent.stderr)
+
+    def test_output_that_is_not_text_does_not_hide_why_a_delivery_failed(self) -> None:
+        self.adapter(deliver=[str(self.tool("sys.stderr.buffer.write(b'no \\xff\\xfe good'); sys.exit(3)"))])
+        self.assertEqual(self.msg("register", "--as", "gemini", env={"GEMINI_SESSION": "gem-123456"}).returncode, 0)
+        sent = self.msg("send", "--to", "gemini", "--from", "claude", "hello")
+        self.assertEqual(sent.returncode, 1, sent.stdout)
+        self.assertIn("no", sent.stderr)
+        self.assertIn("good", sent.stderr)
+        self.assertNotIn("Traceback", sent.stderr)
+
+    def test_a_parent_that_no_process_can_have_is_refused(self) -> None:
+        for extra in ((), ("--detach",)):
+            refused = self.msg("join", "--as", "boss", "--parent", "99999999999999999999", *extra)
+            self.assertEqual(refused.returncode, 1, (extra, refused.stderr))
+            self.assertIn("--parent", refused.stderr)
+            self.assertNotIn("Traceback", refused.stderr)
