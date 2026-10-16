@@ -1759,11 +1759,28 @@ class DetachedListenerTests(RuntimeCase):
         for child in self.children:
             if child.poll() is None:
                 child.terminate()
-        for _ in range(100):
-            if not list(self.runtime.glob("*/*.json")):
-                break
-            time.sleep(0.1)
+                child.wait(timeout=5)    # until it is reaped a parent still counts as a live process
+        self.wait_until_gone()
         super().tearDown()
+
+    def held(self) -> list[Path]:
+        """The names that a listener still holds: each listener gives its lock back as the last thing it does."""
+        found = []
+        for lock_file in self.runtime.glob("*/*.lock"):
+            with open(lock_file, "rb") as handle:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    found.append(lock_file)
+        return found
+
+    def wait_until_gone(self, seconds: float = 30.0) -> bool:
+        deadline = time.monotonic() + seconds
+        while self.held():
+            if time.monotonic() > deadline:
+                return False
+            time.sleep(0.1)
+        return True
 
     def detach(self, name: str, parent: subprocess.Popen[bytes]) -> dict[str, object]:
         # run() waits for the end of the output: it would hang if the listener kept it open
@@ -1945,6 +1962,42 @@ class DetachedListenerTests(RuntimeCase):
             [lock_file] = self.runtime.glob(f"*/{name}.lock")
             with open(lock_file, "rb") as handle, self.assertRaises(BlockingIOError):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_listeners_that_end_together_do_not_wait_for_each_other(self) -> None:
+        # Each one used to tell the others that it was leaving before it went, and those that were leaving
+        # too did not answer: eight of them took 14 seconds, of one second for each request.
+        parent = self.parent()
+        for _ in range(8):
+            started = self.msg("join", "--as", "same", "--detach", "--parent", str(parent.pid))
+            self.assertEqual(started.returncode, 0, started.stderr)
+        self.assertEqual(len(self.listening()), 8)
+        parent.terminate()
+        parent.wait(timeout=5)
+        started = time.monotonic()
+        self.assertTrue(self.wait_until_gone(30))
+        self.assertLess(time.monotonic() - started, 8.0)
+
+    def test_a_listener_with_a_full_queue_of_connections_is_busy_and_not_gone(self) -> None:
+        process, _, _ = self.listen("rx")
+        [socket_file] = self.runtime.glob("*/rx.sock")
+        process.send_signal(signal.SIGSTOP)
+        crowd: list[socket.socket] = []
+        try:
+            for _ in range(200):    # it accepts nobody: the queue fills, and then a connect fails at once
+                connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                connection.settimeout(0.0)
+                crowd.append(connection)
+                try:
+                    connection.connect(str(socket_file))
+                except OSError:
+                    break
+            self.assertEqual(json.loads(self.msg("who", "--json").stdout)["participants"][0]["name"], "rx")
+            self.assertTrue(socket_file.exists())
+            self.assertTrue(socket_file.with_suffix(".json").exists())
+        finally:
+            for connection in crowd:
+                connection.close()
+            process.send_signal(signal.SIGCONT)
 
     def test_a_parent_that_is_not_a_process_is_refused(self) -> None:
         # kill(0, 0) and kill(-1, 0) succeed, so such a "parent" would never end and the listener with it
