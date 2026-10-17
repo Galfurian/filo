@@ -825,6 +825,8 @@ class Adapter:
     process: str | None = None
     capture_env: tuple[str, ...] = ()
     alive: Callable[[dict[str, str]], bool] | None = None
+    needs: tuple[str, ...] = ()    # variables that a session must have for ``register`` to work: ``needs_hint`` says what else
+    needs_hint: str = ""
 
 
 def captured_env(adapter: Adapter, env: dict[str, str]) -> dict[str, str]:
@@ -875,6 +877,56 @@ def agy_alive(env: dict[str, str]) -> bool:
     return True
 
 
+CLAUDE_ENV = ("CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN")
+CLAUDE_INBOX_LIMIT = 900_000    # characters: Claude Code refuses about a million, counting its own framing
+
+
+def claude_deliver(session: str, text: str, _scope_path: str, env: dict[str, str]) -> str:
+    """Post ``text`` into the inbox socket of a Claude Code session, as a message for the user turn: a session that
+    is idle starts a turn with it. The socket answers nothing, so what is known is that it was handed over."""
+    path = env.get("CLAUDE_CODE_MESSAGING_SOCKET", "")
+    if not path:
+        raise UserError("send: this Claude session registered without its inbox socket: it has to run /filo again")
+    if len(text) > CLAUDE_INBOX_LIMIT:
+        raise UserError(f"send: a message to a Claude session is limited to about {CLAUDE_INBOX_LIMIT:,} characters; "
+                        f"send the name of a file instead")
+    try:
+        info = os.lstat(path)
+    except OSError as exc:
+        raise UserError(f"send: the inbox of that Claude session is not there: {exc.strerror or exc}") from exc
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+        raise UserError(f"send: {path} is not a socket of yours: refusing to write to it")
+    token = env.get("CLAUDE_CODE_MESSAGING_TOKEN", "")
+    frames: list[JsonObject] = [{"type": "auth", "token": token}] if token else []
+    frames.append({"type": "user", "message": {"role": "user", "content": text}})
+    data = "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in frames).encode("utf-8")
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(5.0)
+            connection.connect(path)
+            connection.sendall(data)
+    except OSError as exc:
+        raise UserError(f"send: the inbox of that Claude session did not take it: {exc.strerror or exc}") from exc
+    return f"claude session {session}"
+
+
+def claude_alive(env: dict[str, str]) -> bool:
+    """Whether the inbox socket of a Claude Code session still accepts connections: the file of a closed session
+    stays and refuses them. True when it cannot be probed."""
+    path = env.get("CLAUDE_CODE_MESSAGING_SOCKET", "")
+    if not path:
+        return True
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(1.0)
+            connection.connect(path)
+    except (ConnectionRefusedError, FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def string_list(value: Any) -> list[str]:
     """``value`` as a non-empty list of strings, or ValueError."""
     items = cast(list[object], value) if isinstance(value, list) else []
@@ -915,7 +967,12 @@ def adapters() -> dict[str, Adapter]:
     found = {"codex": Adapter("codex", codex_deliver, id_env="CODEX_THREAD_ID",
                               process="codex"),
              "agy": Adapter("agy", agy_deliver, id_env="ANTIGRAVITY_CONVERSATION_ID",
-                            process="agy", capture_env=AGY_ENV, alive=agy_alive)}
+                            process="agy", capture_env=AGY_ENV, alive=agy_alive),
+             "claude": Adapter("claude", claude_deliver, id_env="CLAUDE_CODE_SESSION_ID", capture_env=CLAUDE_ENV,
+                               alive=claude_alive, needs=("CLAUDE_CODE_MESSAGING_SOCKET",),
+                               needs_hint="this Claude Code session has no inbox socket (it needs Claude Code 2.1.224 "
+                                          "or later, with messaging on): use `filo join --as NAME --detach --parent "
+                                          "$CLAUDE_PID` and a Monitor on `filo watch` instead")}
     path = Path(os.environ.get("FILO_ADAPTERS", "~/.config/filo/adapters.json")).expanduser()
     try:
         configured = parse_json(path.read_text(encoding="utf-8"))
@@ -1090,6 +1147,8 @@ def register(args: argparse.Namespace) -> int:
         raise UserError(f"register: no session id for {client}{hint}")
     if not SESSION_ID.fullmatch(session):
         raise UserError(f"register: {session!r} is not a valid session id")
+    if any(not os.environ.get(key) for key in adapter.needs):
+        raise UserError(f"register: {adapter.needs_hint or 'this session lacks what ' + client + ' needs'}")
     same = [row for row in read_registrations(scope) if row.client == client and row.session == session]
     captured = {key: os.environ[key] for key in adapter.capture_env if key in os.environ}
 

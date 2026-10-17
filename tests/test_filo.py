@@ -224,7 +224,7 @@ class CodexQueueRouteTests(unittest.TestCase):
         self.assertFalse(self.record.exists())
 
     def test_other_recipients_do_not_use_codex(self) -> None:
-        sent = self.send("--to", "claude", "--from", "codex", "hello")
+        sent = self.send("--to", "boss", "--from", "codex", "hello")
         self.assertNotEqual(sent.returncode, 0)
         self.assertIn("not connected", sent.stderr)
         self.assertFalse(self.record.exists())
@@ -355,7 +355,7 @@ class RegistrationTests(CodexQueueRouteTests):
         self.assertEqual(list(self.runtime.glob("*/*.reg")), [])
 
     def test_rejects_other_clients_and_unsafe_thread_ids(self) -> None:
-        self.assertNotEqual(self.register("--as", "claude", "--session", "abcd1234").returncode, 0)
+        self.assertNotEqual(self.register("--as", "nobody", "--session", "abcd1234").returncode, 0)
         unsafe = self.register("--as", "codex", "--session=--dangerous")
         self.assertNotEqual(unsafe.returncode, 0)
         self.assertIn("session id", unsafe.stderr)
@@ -964,7 +964,7 @@ class AdapterConfigTests(RuntimeCase):
     def test_unknown_clients_and_bad_configs_are_rejected_clearly(self) -> None:
         unknown = self.msg("register", "--as", "nobody", "--session", "abcdef123")
         self.assertNotEqual(unknown.returncode, 0)
-        self.assertIn("known: agy, codex, gemini", unknown.stderr)
+        self.assertIn("known: agy, claude, codex, gemini", unknown.stderr)
         self.config.write_text(json.dumps({"codex": {"deliver": ["x"]}}), encoding="utf-8")
         self.assertIn("built in", self.msg("who").stderr)
         self.config.write_text("{not json", encoding="utf-8")
@@ -2701,3 +2701,124 @@ class ErrorTests(RuntimeCase):
             self.assertEqual(refused.returncode, 1, (extra, refused.stderr))
             self.assertIn("--parent", refused.stderr)
             self.assertNotIn("Traceback", refused.stderr)
+
+
+class ClaudeInboxTests(RuntimeCase):
+    """A Claude Code session is reached through the inbox socket that it binds, like agy through its sidecar:
+    nothing has to run for it and nothing has to be armed again."""
+
+    SESSION = "0f5c1d7e-1111-4222-8333-444455556666"
+
+    def setUp(self) -> None:
+        super().setUp()
+        for name in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN"):
+            self.environment.pop(name, None)
+        self.socket_path = self.root / "inbox.sock"
+        self.received: list[str] = []
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server.bind(str(self.socket_path))
+        self.server.listen(8)
+        self.serving = True
+        threading.Thread(target=self.serve, daemon=True).start()
+        self.addCleanup(self.stop_server)
+
+    def serve(self) -> None:
+        while self.serving:
+            try:
+                connection, _ = self.server.accept()
+            except OSError:
+                return
+            with connection:
+                connection.settimeout(2)
+                data = b""
+                try:
+                    while chunk := connection.recv(65536):
+                        data += chunk
+                except OSError:
+                    pass
+                self.received.extend(line for line in data.decode("utf-8", "replace").split("\n") if line)
+
+    def stop_server(self) -> None:
+        self.serving = False
+        try:
+            self.server.shutdown(socket.SHUT_RDWR)    # a close alone does not end a listen that another thread waits on
+        except OSError:
+            pass
+        self.server.close()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:    # until what is left of the file refuses a connection, as a closed session's does
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                probe.connect(str(self.socket_path))
+            except OSError:
+                return
+            finally:
+                probe.close()
+            time.sleep(0.02)
+
+    def session(self, **extra: str) -> dict[str, str]:
+        return {"CLAUDE_CODE_SESSION_ID": self.SESSION, "CLAUDE_CODE_MESSAGING_SOCKET": str(self.socket_path),
+                "CLAUDE_CODE_MESSAGING_TOKEN": "token-123", **extra}
+
+    def register(self, **extra: str) -> subprocess.CompletedProcess[str]:
+        return self.msg("register", "--as", "claude", env=self.session(**extra))
+
+    def wait_for_lines(self, count: int) -> list[str]:
+        deadline = time.monotonic() + 5
+        while len(self.received) < count and time.monotonic() < deadline:
+            time.sleep(0.02)
+        return list(self.received)
+
+    def test_a_claude_session_registers_with_its_inbox_and_keeps_it_private(self) -> None:
+        registered = self.register()
+        self.assertEqual(registered.returncode, 0, registered.stderr)
+        self.assertIn("registered as claude", registered.stdout)
+        [file] = self.runtime.glob("*/claude.reg")
+        self.assertEqual(file.stat().st_mode & 0o777, 0o600)    # it holds the token of the session
+        self.assertEqual(json.loads(file.read_text(encoding="utf-8"))["env"]["CLAUDE_CODE_MESSAGING_SOCKET"],
+                         str(self.socket_path))
+        who = json.loads(self.msg("who", "--json").stdout)
+        self.assertEqual([(row["name"], row["client"]) for row in who["registered"]], [("claude", "claude")])
+
+    def test_a_message_goes_into_the_inbox_with_its_header_and_the_way_to_answer(self) -> None:
+        self.assertEqual(self.register().returncode, 0)
+        sent = self.msg("send", "--to", "claude", "--from", "tx", "--message", "build it")
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        self.assertIn("queued for claude session", sent.stdout)
+        lines = self.wait_for_lines(2)
+        self.assertEqual(len(lines), 2, lines)
+        self.assertEqual(json.loads(lines[0]), {"type": "auth", "token": "token-123"})
+        frame = json.loads(lines[1])
+        self.assertEqual((frame["type"], frame["message"]["role"]), ("user", "user"))
+        self.assertTrue(frame["message"]["content"].startswith("[filo] Message from tx: build it"))
+        self.assertIn("To reply: filo send --to tx --from claude", frame["message"]["content"])
+
+    def test_without_a_token_no_auth_line_is_sent(self) -> None:
+        self.assertEqual(self.register(CLAUDE_CODE_MESSAGING_TOKEN="").returncode, 0)
+        self.assertEqual(self.msg("send", "--to", "claude", "--from", "tx", "--message", "hi").returncode, 0)
+        lines = self.wait_for_lines(1)
+        self.assertEqual([json.loads(line)["type"] for line in lines], ["user"])
+
+    def test_a_session_whose_inbox_is_gone_is_forgotten_and_not_written_to(self) -> None:
+        self.assertEqual(self.register().returncode, 0)
+        self.stop_server()    # the socket file stays, and nothing listens: it is what a closed session leaves
+        who = json.loads(self.msg("who", "--json").stdout)
+        self.assertEqual(who["registered"], [])
+        sent = self.msg("send", "--to", "claude", "--from", "tx", "--message", "anyone?")
+        self.assertEqual(sent.returncode, 1)
+        self.assertIn("has ended; nothing was queued", sent.stderr)
+
+    def test_a_claude_without_an_inbox_is_told_what_to_do_instead(self) -> None:
+        refused = self.register(CLAUDE_CODE_MESSAGING_SOCKET="", CLAUDE_CODE_MESSAGING_TOKEN="")
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("inbox socket", refused.stderr)
+        self.assertIn("join", refused.stderr)
+        self.assertEqual(list(self.runtime.glob("*/claude.reg")), [])
+
+    def test_a_message_too_big_for_the_inbox_is_refused_before_it_is_written(self) -> None:
+        self.assertEqual(self.register().returncode, 0)
+        sent = self.msg("send", "--to", "claude", "--from", "tx", "--stdin", stdin="x" * 950_000)
+        self.assertEqual(sent.returncode, 1)
+        self.assertIn("characters", sent.stderr)
+        time.sleep(0.3)
+        self.assertEqual(self.received, [])
