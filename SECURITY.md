@@ -36,7 +36,9 @@ protect.
   `peer_pid` in a message event is the process that really sent it.
 - A client registered with `capture_env` leaves secrets in its registration file. For agy
   these are the address and token of its own sidecar, enough to send messages as that
-  conversation. The file is `0600` and is removed when the session is forgotten.
+  conversation; for Claude Code, the path and token of the session's inbox socket, enough to
+  write messages into that session. The file is `0600` and is removed when the session is
+  forgotten. filo writes to that socket only if it is a socket of your own user.
 
 **Where a message came from.** A message carries the scope its sender belongs to (`home`, and the
 directory it ran in, `origin`, for older filo), and a listener marks it `foreign` when that is not its

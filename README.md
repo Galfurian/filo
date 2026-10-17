@@ -113,7 +113,7 @@ filo show ID                                # the whole text of a message you re
 filo join --as human                        # a human listener, no LLM
 filo join --as claude --detach --parent PID # a listener that goes on by itself, and ends with PID
 filo watch --as claude                      # a detached listener's messages, one JSON line each
-filo register --as agy --name reviewer      # announce a Codex or agy session, under a name you choose
+filo register --as agy --name reviewer      # announce a Codex, agy or Claude session, under a name you choose
 filo rename agy-2 reviewer                  # change the name of a registered session
 filo leave                                  # a registered session leaves the pool
 filo leave --name claude                    # a registered session or a listener, by name
@@ -279,7 +279,7 @@ depends on the recipient: three routes, shown above and described under
 | Recipient | How a message gets there |
 |---|---|
 | Listening (`join`) | Straight to its socket. |
-| Registered (`register`) | Through the client's adapter, for example `codex queue` or `agentapi send-message`. |
+| Registered (`register`) | Through the client's adapter, for example `codex queue`, `agentapi send-message` or the inbox socket of a Claude Code session. |
 | Known but away | Into a spool; delivered when a listener with that name joins. Kept for an hour (`FILO_SPOOL_TTL`), names are remembered for a day (`FILO_KNOWN_TTL`). |
 | Never seen | Error. |
 
@@ -319,7 +319,8 @@ so that you can tell what is going on and what can go wrong.
 
 | Client | Connects with | A message arrives as | Limits |
 |---|---|---|---|
-| Claude | `filo join --detach --parent $CLAUDE_PID`, and a Monitor on `filo watch` | an event that wakes it, with the reply command | the Monitor expires after 30 minutes; start it again, which changes nothing for the others |
+| Claude | `filo register --as claude` (records `$CLAUDE_CODE_SESSION_ID` and the session's inbox socket and token) | a turn of its own, even when idle, written into the inbox socket that Claude Code binds for each session | needs Claude Code 2.1.224 or later; a session that skips permission prompts can have messages held for approval (`crossSessionInbound`); the socket answers nothing, so a send is "queued", never "read"; about 900,000 characters at most |
+| Claude without the socket | `filo join --detach --parent $CLAUDE_PID`, and a Monitor on `filo watch` | an event that wakes it, with the reply command | the Monitor expires after 30 minutes and has to be armed again: a session that forgets goes deaf |
 | Codex | `filo register --as codex` (records `$CODEX_THREAD_ID`) | a normal turn, through `codex queue`, even while you type | none |
 | OpenCode | `/filo` runs the plugin, which starts `filo join` for that session | a user message in the same session, through the plugin; the chat is never locked | the plugin adds the tools `filo_join` and `filo_leave` to every OpenCode session; a message that arrives while OpenCode works waits for the step to end (OpenCode 2 keeps it in the session's own queue, OpenCode 1 in the plugin). OpenCode 2 gets `/filo` from the plugin itself; the command file is what OpenCode 1 uses, and in OpenCode 2 it asks the model to call `filo_join` with what you typed (its `arguments`). `FILO_BIN` names the `filo` that the plugin runs, when it is not the first in `PATH` |
 | agy | `filo register --as agy` (records `$ANTIGRAVITY_CONVERSATION_ID`) | a system message, through `agentapi send-message`; the chat is never locked and no second `agy` starts | an idle agy starts a turn on its own when one arrives; a busy one gets it when its current step ends, and it does not interrupt a running command; `register` must run inside agy |
@@ -404,7 +405,8 @@ reaches a model that can run commands.
 
 A client with `capture_env` leaves secrets in its registration file. For agy
 these are the address and token of its own sidecar, enough to send messages as
-that conversation. The file is mode `0600` and lives until the registration is
+that conversation; for Claude Code, the path and token of the session's inbox socket, enough to
+write messages into that session. The file is mode `0600` and lives until the registration is
 forgotten, which happens when the session's process is gone.
 
 The runtime directory is private to your user, and filo refuses one that is a link or
