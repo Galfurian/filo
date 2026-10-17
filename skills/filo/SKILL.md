@@ -186,6 +186,9 @@ file for the listener; that is normal and needs no approval.
   inside one scope. If the sender is not in `filo who`, tell the user; do
   not guess another `--scope` and do not write to some other agent that happens
   to carry the same name.
+- If `filo who` says that a listener (yours, or another's) runs an older filo, it keeps running
+  the code that started it: tell the user. If it is yours, join again with the same name after
+  `filo leave --name NAME`. Do not do it for another's listener.
 - If `filo who` says a newer version of filo is available, tell the user and leave it
   there. `filo upgrade` runs a script downloaded from the network: the user runs it, you
   do not.

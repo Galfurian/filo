@@ -517,6 +517,7 @@ def evict(scope: str, metadata: Path) -> None:
 class Participant:
     name: str
     pid: int
+    version: str | None = None    # the filo that the listener runs: it keeps running it when another is installed
 
 
 def listener_present(scope: str, name: str, pid: int) -> bool:
@@ -563,7 +564,8 @@ def participant_rows(scope: str, exclude: str | None = None) -> list[Participant
         if name == exclude:
             continue
         if listener_present(scope, name, pid):
-            rows.append(Participant(name, pid))
+            version = info.get("version")
+            rows.append(Participant(name, pid, version if isinstance(version, str) else None))
         else:
             evict(scope, metadata)
     return rows
@@ -602,7 +604,13 @@ def print_rows(rows: list[Participant], heading: str, registered: Sequence[Regis
         print("  (none)")
         return
     for row in rows:
-        print(f"  {row.name}  pid={row.pid}")
+        if row.version == __version__:
+            note = ""
+        elif row.version is None:
+            note = "  (runs an older filo: it has to join again to use this one)"
+        else:
+            note = f"  (runs filo {row.version}, this is {__version__}: it has to join again to use it)"
+        print(f"  {row.name}  pid={row.pid}{note}")
     for entry in registered:
         queue = waits.get(entry.name) if waits else None
         extra = f", {queue[0]} waiting, oldest {duration(queue[1])}" if queue and queue[0] > 0 else ""
@@ -1495,7 +1503,8 @@ class Listener:
         os.chmod(self.socket_file, 0o600)
         self.server.listen(32)
         self.server.settimeout(0.5)
-        write_metadata(self.metadata, {"name": self.name, "pid": os.getpid(), "started_ns": time.time_ns()})
+        write_metadata(self.metadata, {"name": self.name, "pid": os.getpid(), "started_ns": time.time_ns(),
+                                       "version": __version__})
         mark_known(self.scope, self.name, "listener")
         remember_scope(self.scope)
         if self.detached:

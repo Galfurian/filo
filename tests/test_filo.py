@@ -2934,3 +2934,40 @@ class DeliveryStateTests(RuntimeCase):
         [row] = json.loads(self.msg("who", "--json").stdout)["registered"]
         self.assertNotIn("waiting", row)
         self.assertNotIn("waiting", self.msg("who").stdout)
+
+
+class ListenerVersionTests(RuntimeCase):
+    """A listener goes on running the filo that started it, whatever is installed since: `who` says so."""
+
+    def current(self) -> str:
+        return self.msg("--version").stdout.split()[-1]
+
+    def edit_listener(self, **changes: object) -> None:
+        [metadata_file] = self.runtime.glob("*/boss.json")
+        metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+        for key, value in changes.items():
+            if value is None:
+                metadata.pop(key, None)
+            else:
+                metadata[key] = value
+        metadata_file.write_text(json.dumps(metadata), encoding="utf-8")
+
+    def test_a_listener_of_the_installed_filo_is_listed_as_before(self) -> None:
+        self.listen("boss")
+        [row] = json.loads(self.msg("who", "--json").stdout)["participants"]
+        self.assertEqual(row["version"], self.current())
+        self.assertNotIn("runs", self.msg("who").stdout)
+
+    def test_a_listener_of_an_older_filo_says_which_and_what_to_do(self) -> None:
+        self.listen("boss")
+        self.edit_listener(version="0.0.1")
+        text = self.msg("who").stdout
+        self.assertIn(f"runs filo 0.0.1, this is {self.current()}", text)
+        self.assertIn("join again", text)
+
+    def test_a_listener_from_before_the_version_was_kept_is_an_older_one(self) -> None:
+        self.listen("boss")
+        self.edit_listener(version=None)
+        self.assertIn("runs an older filo", self.msg("who").stdout)
+        [row] = json.loads(self.msg("who", "--json").stdout)["participants"]
+        self.assertIsNone(row["version"])

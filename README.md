@@ -245,6 +245,10 @@ travel with the skill link, so they need no install of their own.
   shows how many wait for a registered session and for how long (for Codex it is read from Codex's
   own queue, a file that can change; for the others filo cannot say). Interrupt that session so
   that it takes them, and send one message that sums up what is still true.
+- **`runs filo 0.4.3, this is 0.4.6`** in `filo who`: a listener goes on running the filo that
+  started it, whatever is installed since, so it lacks what came later. Its session joins again
+  (`filo leave --name NAME`, then `/filo`). The `filo` command that each agent runs is always the
+  installed one, so only listeners are affected.
 - **A Claude Monitor ended**: it does that after at most 30 minutes. Start it again; the listener
   was never gone, so nothing was lost and nobody was told.
 - **A message looks cut off**: the Monitor shows only the start of a long line. `filo show ID`
