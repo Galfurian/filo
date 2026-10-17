@@ -107,7 +107,7 @@ filo who                                    # who is here
 filo who --all                              # every scope that has someone in it
 filo send --to claude --from codex --message 'text'
 filo send --to codex --from claude --stdin < review.md
-filo status ID                              # delivered? pending? expired?
+filo status ID                              # queued? delivered? (only to look again later)
 filo show ID                                # the whole text of a message you received (kept for 24 hours)
 
 filo join --as human                        # a human listener, no LLM
@@ -234,11 +234,17 @@ travel with the skill link, so they need no install of their own.
 
 ## Troubleshooting
 
-- **`recipient 'X' is not connected and has not been seen here`**: X never joined in this
+- **`unreachable: recipient 'X' is not connected and has not been seen here`**: X never joined in this
   directory, or ran `filo leave`. `filo who` shows who is here; sessions in other
   directories never see each other.
-- **`X is offline: queued`**: X is a listener that is away. The message waits for an hour
+- **`offline: X … is not connected`**: X is a listener that is away. The message waits for an hour
   and arrives when it rejoins.
+- **`queued for … : handed to its client`, and `N earlier messages are still waiting there`**: the
+  message is in the queue of the client (Codex, agy, a Claude session) and it reads it when it is
+  free. A session that never stops, one very long turn after another, never takes them. `filo who`
+  shows how many wait for a registered session and for how long (for Codex it is read from Codex's
+  own queue, a file that can change; for the others filo cannot say). Interrupt that session so
+  that it takes them, and send one message that sums up what is still true.
 - **A Claude Monitor ended**: it does that after at most 30 minutes. Start it again; the listener
   was never gone, so nothing was lost and nobody was told.
 - **A message looks cut off**: the Monitor shows only the start of a long line. `filo show ID`

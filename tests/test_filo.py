@@ -992,7 +992,7 @@ class AdapterConfigTests(RuntimeCase):
         self.config.write_text("{not json", encoding="utf-8")
         sent = self.msg("send", "--to", "claude", "--from", "me", "hello")
         self.assertEqual(sent.returncode, 0, sent.stderr)
-        self.assertIn("queued", sent.stdout)
+        self.assertIn("offline", sent.stdout)
 
 
 SHELL = shutil.which("sh") or "/bin/sh"
@@ -1678,7 +1678,7 @@ class SessionScopeTests(RuntimeCase):
     def test_a_registered_session_sends_from_a_worktree_without_saying_where_to(self) -> None:
         sent = self.msg("send", "--to", "boss", "--from", "worker", "--message", "hi", scope=self.worktree, env=self.me)
         self.assertEqual(sent.returncode, 0, sent.stderr)
-        self.assertIn("sent directly to boss", sent.stdout)
+        self.assertIn("delivered to boss", sent.stdout)
         self.assertIn(f"working in {self.scope.resolve()}", sent.stderr)
 
     def test_who_status_and_leave_follow_it_too(self) -> None:
@@ -1689,7 +1689,9 @@ class SessionScopeTests(RuntimeCase):
         as_json = json.loads(self.msg("who", "--json", scope=self.worktree, env=self.me).stdout)
         self.assertEqual(as_json["scope"], str(self.scope.resolve()))
         sent = self.msg("send", "--to", "boss", "--from", "worker", "--message", "hi", scope=self.worktree, env=self.me)
-        message_id = sent.stdout.split("(")[-1].rstrip(")\n")
+        found = re.search(r"\(([0-9a-f]+-[0-9a-f]+)\)", sent.stdout)
+        assert found is not None
+        message_id = found.group(1)
         status = self.msg("status", message_id, scope=self.worktree, env=self.me)
         self.assertIn("delivered", status.stdout)
         left = self.msg("leave", scope=self.worktree, env=self.me)
@@ -2822,3 +2824,113 @@ class ClaudeInboxTests(RuntimeCase):
         self.assertIn("characters", sent.stderr)
         time.sleep(0.3)
         self.assertEqual(self.received, [])
+
+
+class DeliveryStateTests(RuntimeCase):
+    """What a send says is one of four things, whichever client is at the other end, and what the sender has to
+    do next is in the line: nobody should ask again, or ask for the state of what was only handed over."""
+
+    THREAD = "01a14a25-cdb2-7843-a251-dd7d11adcc16"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.record = add_gemini_adapter(self)
+
+    def test_a_listener_that_has_the_message_is_delivered(self) -> None:
+        self.listen("boss")
+        sent = self.msg("send", "--to", "boss", "--from", "me", "--message", "hi")
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        self.assertRegex(sent.stdout, r"^delivered to boss \(\S+\)")
+        self.assertIn("Do not send it again", sent.stdout)
+
+    def test_what_a_client_keeps_in_a_queue_of_its_own_is_queued_and_never_delivered(self) -> None:
+        self.assertEqual(self.msg("register", "--as", "gemini", env={"GEMINI_SESSION": "gem-123456"}).returncode, 0)
+        sent = self.msg("send", "--to", "gemini", "--from", "me", "--message", "hi")
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        self.assertRegex(sent.stdout, r"^queued for ")
+        self.assertNotIn("delivered", sent.stdout)
+        self.assertIn("do not wait for an answer", sent.stdout.lower())
+        identifier = re.search(r"\(([0-9a-f]+-[0-9a-f]+)\)", sent.stdout)
+        assert identifier is not None
+        status = self.msg("status", identifier.group(1)).stdout
+        self.assertTrue(status.startswith("queued for gemini"), status)
+        self.assertIn("cannot see whether it was read", status)
+
+    def test_a_name_that_is_away_is_offline_and_the_message_waits(self) -> None:
+        process, _, _ = self.listen("boss")
+        process.terminate()
+        process.wait(timeout=5)
+        sent = self.msg("send", "--to", "boss", "--from", "me", "--message", "hi")
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        self.assertRegex(sent.stdout, r"^offline: boss \(\S+\) is not connected")
+        self.assertIn("Do not send it again", sent.stdout)
+
+    def test_nobody_there_is_unreachable_and_exits_with_an_error(self) -> None:
+        sent = self.msg("send", "--to", "nobody", "--from", "me", "--message", "hi")
+        self.assertEqual(sent.returncode, 1)
+        self.assertTrue(sent.stderr.startswith("unreachable: "), sent.stderr)
+        self.assertEqual(sent.stdout, "")
+
+    def test_a_message_that_a_busy_listener_will_take_from_the_spool_is_queued(self) -> None:
+        process, _, _ = self.listen("boss")
+        process.send_signal(signal.SIGSTOP)    # alive, and not answering: its message waits in the spool
+        try:
+            sent = self.msg("send", "--to", "boss", "--from", "me", "--message", "hi")
+            identifier = re.search(r"\(([0-9a-f]+-[0-9a-f]+)\)", sent.stdout)
+            assert identifier is not None
+            while_waiting = self.msg("status", identifier.group(1)).stdout
+        finally:
+            process.send_signal(signal.SIGCONT)
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        self.assertRegex(sent.stdout, r"^queued for boss \(\S+\)")
+        self.assertTrue(while_waiting.startswith("queued: pending for boss"), while_waiting)
+
+    def codex(self, waiting: int, minutes: int) -> None:
+        """A `codex` that records nothing and a Codex home whose queue holds ``waiting`` messages for the thread."""
+        import sqlite3
+        home = self.root / "codex-home"
+        home.mkdir()
+        connection = sqlite3.connect(home / "queue_1.sqlite")
+        connection.execute("create table queued_items (id text primary key, thread_id text not null, payload_json text, "
+                           "queue_order integer, created_at_ms integer, updated_at_ms integer)")
+        for number in range(waiting):
+            created = int((time.time() - minutes * 60 + number) * 1000)
+            connection.execute("insert into queued_items values (?, ?, '{}', ?, ?, ?)",
+                               (f"item-{number}", self.THREAD, number, created, created))
+        connection.execute("insert into queued_items values ('other', 'someone-else', '{}', 99, 0, 0)")
+        connection.commit()
+        connection.close()
+        tool = self.root / "bin"
+        tool.mkdir(exist_ok=True)
+        fake = tool / "codex"
+        fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake.chmod(0o755)
+        self.environment.update({"CODEX_HOME": str(home), "FILO_NO_PRUNE": "1",
+                                 "PATH": f"{tool}{os.pathsep}{os.environ['PATH']}"})
+        registered = self.msg("register", "--as", "codex", "--name", "worker2", env={"CODEX_THREAD_ID": self.THREAD})
+        self.assertEqual(registered.returncode, 0, registered.stderr)
+
+    def test_a_send_says_how_many_messages_already_wait_in_the_queue_of_the_client(self) -> None:
+        self.codex(waiting=4, minutes=47)    # four are there, and the one that this send adds makes five
+        sent = self.msg("send", "--to", "worker2", "--from", "me", "--message", "hi")
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        self.assertRegex(sent.stdout, r"^queued for codex thread ")
+        self.assertIn("4 earlier", sent.stdout)
+        self.assertIn("47 min", sent.stdout)
+        self.assertIn("busy", sent.stdout)
+
+    def test_who_shows_what_waits_for_a_registered_session(self) -> None:
+        self.codex(waiting=3, minutes=30)
+        who = json.loads(self.msg("who", "--json").stdout)
+        [row] = who["registered"]
+        self.assertEqual(row["waiting"], 3)
+        self.assertTrue(29 * 60 <= row["oldest_seconds"] <= 31 * 60, row)
+        text = self.msg("who").stdout
+        self.assertIn("3 waiting", text)
+        self.assertIn("oldest 30 min", text)
+
+    def test_a_client_that_cannot_say_what_waits_is_listed_without_it(self) -> None:
+        self.assertEqual(self.msg("register", "--as", "gemini", env={"GEMINI_SESSION": "gem-123456"}).returncode, 0)
+        [row] = json.loads(self.msg("who", "--json").stdout)["registered"]
+        self.assertNotIn("waiting", row)
+        self.assertNotIn("waiting", self.msg("who").stdout)
