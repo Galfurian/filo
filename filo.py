@@ -25,6 +25,7 @@ import select
 import shlex
 import signal
 import socket
+import sqlite3
 import stat
 import struct
 import subprocess
@@ -568,11 +569,34 @@ def participant_rows(scope: str, exclude: str | None = None) -> list[Participant
     return rows
 
 
-def registered_rows(rows: list[Registration]) -> list[JsonObject]:
-    return [{"name": row.name, "client": row.client, "session": row.session} for row in rows]
+def registered_rows(rows: list[Registration], waits: dict[str, tuple[int, float]] | None = None) -> list[JsonObject]:
+    shown: list[JsonObject] = []
+    for row in rows:
+        entry: JsonObject = {"name": row.name, "client": row.client, "session": row.session}
+        if waits is not None and row.name in waits:
+            entry["waiting"], entry["oldest_seconds"] = waits[row.name][0], int(waits[row.name][1])
+        shown.append(entry)
+    return shown
 
 
-def print_rows(rows: list[Participant], heading: str, registered: Sequence[Registration] = ()) -> None:
+def registration_waits(rows: list[Registration]) -> dict[str, tuple[int, float]]:
+    """What waits in the client's own queue for each registered session whose client can say it."""
+    try:
+        known = adapters()
+    except UserError:
+        return {}
+    waits: dict[str, tuple[int, float]] = {}
+    for row in rows:
+        adapter = known.get(row.client)
+        if adapter is not None and adapter.waiting is not None:
+            found = adapter.waiting(row.session, captured_env(adapter, row.env))
+            if found is not None:
+                waits[row.name] = found
+    return waits
+
+
+def print_rows(rows: list[Participant], heading: str, registered: Sequence[Registration] = (),
+               waits: dict[str, tuple[int, float]] | None = None) -> None:
     print(heading)
     if not rows and not registered:
         print("  (none)")
@@ -580,7 +604,9 @@ def print_rows(rows: list[Participant], heading: str, registered: Sequence[Regis
     for row in rows:
         print(f"  {row.name}  pid={row.pid}")
     for entry in registered:
-        print(f"  {entry.name}  {entry.client} session={entry.session}  (registered)")
+        queue = waits.get(entry.name) if waits else None
+        extra = f", {queue[0]} waiting, oldest {duration(queue[1])}" if queue and queue[0] > 0 else ""
+        print(f"  {entry.name}  {entry.client} session={entry.session}  (registered{extra})")
 
 
 def reply_hint(sender: str, me: str, origin: str | None = None) -> str:
@@ -797,11 +823,14 @@ def message_status(scope: str, message_id: str) -> str:
     directory = scope_directory(scope)
     try:
         ack = read_object(directory / "acks" / f"{message_id}.json")
+        if str(ack["how"]).startswith("queued to "):
+            return (f"queued for {ack['to']} ({ack['how']}); it reads it when it is free, and filo cannot see "
+                    f"whether it was read")
         return f"delivered to {ack['to']} ({ack['how']})"
     except (OSError, ValueError, KeyError):
         pass
     for pending in directory.glob(f"spool/*/{message_id}.msg"):
-        return f"pending for {pending.parent.name}"
+        return f"queued: pending for {pending.parent.name} in the spool, which its listener empties"
     return "unknown: expired, or not sent in this scope"
 
 
@@ -818,6 +847,8 @@ class Adapter:
     ``register`` copies from the session; ``deliver`` receives them as ``env``.
     ``alive(env)``, when given, says whether the session still runs. It is exact
     where counting processes is not, and answers True when it cannot tell.
+    ``waiting(session, env)``, when given, says how many messages wait in the client's own queue and for how
+    many seconds the oldest has, or None when that cannot be told.
     """
     client: str
     deliver: Callable[[str, str, str, dict[str, str]], str]
@@ -825,6 +856,7 @@ class Adapter:
     process: str | None = None
     capture_env: tuple[str, ...] = ()
     alive: Callable[[dict[str, str]], bool] | None = None
+    waiting: Callable[[str, dict[str, str]], tuple[int, float] | None] | None = None
     needs: tuple[str, ...] = ()    # variables that a session must have for ``register`` to work: ``needs_hint`` says what else
     needs_hint: str = ""
 
@@ -843,6 +875,25 @@ def run_delivery(argv: list[str], label: str, env: dict[str, str] | None = None)
         raise UserError(f"send: {label} failed: {exc}") from exc
     if result.returncode != 0:
         raise UserError(f"send: {label} failed: {(result.stderr or result.stdout).strip()}")
+
+
+def codex_waiting(session: str, _env: dict[str, str]) -> tuple[int, float] | None:
+    """How many messages wait in Codex's own queue for the thread ``session``, and for how long the oldest has.
+    Codex hands them over when the thread is free, so a thread that never is leaves them there. Read from the
+    queue database that Codex keeps: a file of Codex's own, which can change, so None when it cannot be read."""
+    database = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser() / "queue_1.sqlite"
+    try:
+        connection = sqlite3.connect(f"file:{urllib.parse.quote(str(database))}?mode=ro", uri=True, timeout=1.0)
+        try:
+            count, oldest = connection.execute(
+                "select count(*), min(created_at_ms) from queued_items where thread_id = ?", (session,)).fetchone()
+        finally:
+            connection.close()
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+    if not count or oldest is None:
+        return 0, 0.0
+    return int(count), max(0.0, time.time() - int(oldest) / 1000)
 
 
 def codex_deliver(session: str, text: str, _scope_path: str, _env: dict[str, str]) -> str:
@@ -965,7 +1016,7 @@ def command_adapter(client: str, spec: Any) -> Adapter:
 def adapters() -> dict[str, Adapter]:
     """Built-in adapters plus the ones in ``$FILO_ADAPTERS`` or ``~/.config/filo/adapters.json``."""
     found = {"codex": Adapter("codex", codex_deliver, id_env="CODEX_THREAD_ID",
-                              process="codex"),
+                              process="codex", waiting=codex_waiting),
              "agy": Adapter("agy", agy_deliver, id_env="ANTIGRAVITY_CONVERSATION_ID",
                             process="agy", capture_env=AGY_ENV, alive=agy_alive),
              "claude": Adapter("claude", claude_deliver, id_env="CLAUDE_CODE_SESSION_ID", capture_env=CLAUDE_ENV,
@@ -1293,31 +1344,55 @@ def adapter_target(scope: str, recipient: str) -> tuple[Adapter, str, dict[str, 
     return None
 
 
+AGAIN = "Do not send it again"
+
+
+def duration(seconds: float) -> str:
+    """A time as a person says it: seconds under a minute and a half, minutes under two hours, else hours."""
+    if seconds < 90:
+        return f"{int(seconds)} s"
+    if seconds < 7200:
+        return f"{int(seconds // 60)} min"
+    return f"{int(seconds // 3600)} h"
+
+
+def waiting_note(count: int, oldest: float) -> str:
+    plural = count != 1
+    return (f"{count} earlier message{'s' if plural else ''} {'are' if plural else 'is'} still waiting there, the "
+            f"oldest for {duration(oldest)}: it is probably busy.")
+
+
 def deliver_offline(scope: str, recipient: str, sender: str, body: str, message_id: str) -> str:
     """Reach a recipient with no reachable listener: adapter, else spool, else fail."""
     target = adapter_target(scope, recipient)
     if target is not None:
         adapter, session, env = target
         text = compose_text(sender, recipient, body, sender_fields(sender, scope).get("home"), scope)
+        earlier = adapter.waiting(session, env) if adapter.waiting is not None else None    # before this one is in
         where = adapter.deliver(session, text, scope_path(scope) or "", env)
         write_ack(scope, message_id, recipient, f"queued to {where}")
-        return f"queued for {where} ({message_id})"
+        line = (f"queued for {where} ({message_id}): handed to its client, which reads it when it is free. "
+                f"{AGAIN}, and do not wait for an answer here.")
+        if earlier is not None and earlier[0] > 0:
+            line += " " + waiting_note(*earlier)
+        return line
     if metadata_path(scope, recipient).exists():
         if listener_is_live(scope, recipient):
             spool_message(scope, recipient, sender, body, message_id)
-            return f"left for {recipient} ({message_id}); it will deliver it shortly"
+            return (f"queued for {recipient} ({message_id}): its listener is busy and takes it from the spool "
+                    f"shortly. {AGAIN}.")
         evict(scope, metadata_path(scope, recipient))
     if is_known(scope, recipient) and known_kind(scope, recipient) == "registered":
-        raise UserError(f"{recipient!r} was a registered session and has ended; nothing was queued. "
+        raise UserError(f"unreachable: {recipient!r} was a registered session and has ended; nothing was queued. "
                         f"It has to run 'filo register' again")
     if is_known(scope, recipient):
         spool_message(scope, recipient, sender, body, message_id)
-        return (f"{recipient} is offline: queued ({message_id}) for up to "
-                f"{int(spool_ttl() // 60)} minutes, delivered when it joins again")
+        return (f"offline: {recipient} ({message_id}) is not connected; the message waits for up to "
+                f"{int(spool_ttl() // 60)} minutes and arrives when it joins again. {AGAIN}.")
     if recipient in adapters():
-        raise UserError(f"{recipient!r} has not registered here, and filo does not guess which {recipient} "
-                        f"session you mean: run /filo in it, then 'filo who' to see its name")
-    raise UserError(f"recipient {recipient!r} is not connected and has not been seen here; "
+        raise UserError(f"unreachable: {recipient!r} has not registered here, and filo does not guess which "
+                        f"{recipient} session you mean: run /filo in it, then 'filo who' to see its name")
+    raise UserError(f"unreachable: recipient {recipient!r} is not connected and has not been seen here; "
                      f"run 'filo who' to see who is")
 
 
@@ -1332,14 +1407,15 @@ def deliver_message(scope: str, recipient: str, sender: str, body: str, message_
         # Sandboxed sender: it cannot connect, but a listener exists (its
         # metadata is there), so leave the message for it to pick up.
         if not metadata_path(scope, recipient).exists():
-            raise UserError(f"recipient {recipient!r} is not connected: {exc}") from exc
+            raise UserError(f"unreachable: recipient {recipient!r} is not connected: {exc}") from exc
         spool_message(scope, recipient, sender, body, message_id)
-        return f"left for {recipient} ({message_id}); delivery cannot confirm from this sandbox"
+        return (f"queued for {recipient} ({message_id}): left for its listener, which takes it from the spool; "
+                f"this sandbox cannot confirm that. {AGAIN}.")
     except (OSError, ValueError):
         return deliver_offline(scope, recipient, sender, body, message_id)
     if not reply.get("ok"):
         raise UserError(str(reply.get("error", "recipient rejected the message")))
-    return f"sent directly to {recipient} ({message_id})"
+    return f"delivered to {recipient} ({message_id}): its listener has it. {AGAIN}."
 
 
 # --- the listener ------------------------------------------------------------
@@ -1889,6 +1965,7 @@ def who_command(args: argparse.Namespace, scope: str | None) -> int:
     assert scope is not None
     participants = participant_rows(scope)
     registered = live_registrations(scope)
+    waits = registration_waits(registered)
     shown = args.scope or str(Path.cwd())
     if scope != canonical_scope(args.scope):    # the session is in another scope than the directory
         shown = display_scope(scope)
@@ -1896,10 +1973,10 @@ def who_command(args: argparse.Namespace, scope: str | None) -> int:
         print(json.dumps({
             "scope": shown,
             "participants": [asdict(row) for row in participants],
-            "registered": registered_rows(registered),
+            "registered": registered_rows(registered, waits),
         }), flush=True)
         return 0
-    print_rows(participants, f"connected to {shown}:", registered)
+    print_rows(participants, f"connected to {shown}:", registered, waits)
     update_notice()
     return 0
 

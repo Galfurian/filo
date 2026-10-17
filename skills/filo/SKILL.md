@@ -149,18 +149,26 @@ When the user tells you to leave, or you are done:
 filo who                                            # who is here, by name
 filo send --to codex  --from claude --message "..."
 filo send --to claude --from codex  --stdin < long-message.txt
-filo status <id>                                    # was it delivered?
+filo status <id>                                    # only to look again later
 ```
 
-`send` prints an id. What it says tells you what happened:
+`send` prints one line that starts with what happened, and says what to do next. It is one of
+four, whichever client is at the other end:
 
-- `sent directly` — delivered.
-- `queued for codex thread ...` or `queued for agy conversation ...` — handed
-  to that session.
-- `left for <name>` or `<name> is offline: queued` — it will be delivered when
-  the recipient listens again. Do not send it twice.
-- an error that the recipient is not connected and has not been seen — tell
-  the user instead of retrying.
+- `delivered` — the recipient's listener has it. Nothing more to do.
+- `queued` — it was handed to the recipient's client (a Codex thread, an agy conversation, the
+  inbox of a Claude session) or left in the spool of a busy listener, and the client reads it
+  when it is free. **Do not send it again, and do not wait for an answer here or ask `status`
+  over and over**: filo cannot see whether a queued message was read. When the line says that
+  earlier messages are still waiting, the recipient is probably busy: tell the user if the
+  message cannot wait, instead of sending more.
+- `offline` — the recipient is known but not connected. The message waits and arrives when it
+  joins again. Do not send it twice.
+- `unreachable` (an error, on stderr) — nobody by that name; the line says why. Tell the user
+  instead of retrying.
+
+`filo who` shows, for a registered session whose client can say it, how many messages wait for
+it and for how long.
 
 Inside the Codex sandbox sockets are blocked, so `send` leaves the message as a
 file for the listener; that is normal and needs no approval.
