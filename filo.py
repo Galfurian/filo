@@ -522,11 +522,30 @@ def evict(scope: str, metadata: Path) -> None:
         pass
 
 
+CLIENT_MARKERS = (("CLAUDECODE", "claude"), ("CODEX_THREAD_ID", "codex"), ("ANTIGRAVITY_CONVERSATION_ID", "agy"))
+
+
+def detect_client() -> str | None:
+    """The client that this process runs under, as far as its environment says: ``FILO_CLIENT`` names it (the OpenCode
+    plugin does, as OpenCode sets nothing of its own), else the variable that a client sets in the shell of its sessions."""
+    named = os.environ.get("FILO_CLIENT", "")
+    if named:
+        try:
+            return valid_name(named, "FILO_CLIENT")
+        except UserError:
+            return None
+    for variable, client in CLIENT_MARKERS:
+        if os.environ.get(variable):
+            return client
+    return None
+
+
 @dataclass(frozen=True)
 class Participant:
     name: str
     pid: int
     version: str | None = None    # the filo that the listener runs: it keeps running it when another is installed
+    client: str | None = None     # the client that started it (claude, codex, opencode, agy), when it could tell
 
 
 def listener_present(scope: str, name: str, pid: int) -> bool:
@@ -573,8 +592,9 @@ def participant_rows(scope: str, exclude: str | None = None) -> list[Participant
         if name == exclude:
             continue
         if listener_present(scope, name, pid):
-            version = info.get("version")
-            rows.append(Participant(name, pid, version if isinstance(version, str) else None))
+            version, client = info.get("version"), info.get("client")
+            rows.append(Participant(name, pid, version if isinstance(version, str) else None,
+                                    client if isinstance(client, str) else None))
         else:
             evict(scope, metadata)
     return rows
@@ -1567,8 +1587,9 @@ class Listener:
         os.chmod(self.socket_file, 0o600)
         self.server.listen(32)
         self.server.settimeout(0.5)
+        client = detect_client()
         write_metadata(self.metadata, {"name": self.name, "pid": os.getpid(), "started_ns": time.time_ns(),
-                                       "version": __version__})
+                                       "version": __version__, **({"client": client} if client else {})})
         mark_known(self.scope, self.name, "listener")
         remember_scope(self.scope)
         record_event(self.scope, {"kind": "presence", "event": "joined", "name": self.name, "client": "listener"})

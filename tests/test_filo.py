@@ -2953,6 +2953,18 @@ class ListenerVersionTests(RuntimeCase):
                 metadata[key] = value
         metadata_file.write_text(json.dumps(metadata), encoding="utf-8")
 
+    def test_a_listener_says_which_client_it_runs_under(self) -> None:
+        markers = ("FILO_CLIENT", "CLAUDECODE", "CODEX_THREAD_ID", "ANTIGRAVITY_CONVERSATION_ID")
+        for name in markers:
+            self.environment.pop(name, None)
+        self.listen("plain")
+        self.listen("named", env={"FILO_CLIENT": "opencode"})
+        self.listen("inferred", env={"CLAUDECODE": "1"})
+        self.listen("both", env={"FILO_CLIENT": "agy", "CLAUDECODE": "1"})    # what is stated wins over what is guessed
+        self.listen("odd", env={"FILO_CLIENT": "not a name!"})    # a name that cannot be one is not used
+        rows = {row["name"]: row.get("client") for row in json.loads(self.msg("who", "--json").stdout)["participants"]}
+        self.assertEqual(rows, {"plain": None, "named": "opencode", "inferred": "claude", "both": "agy", "odd": None})
+
     def test_a_listener_of_the_installed_filo_is_listed_as_before(self) -> None:
         self.listen("boss")
         [row] = json.loads(self.msg("who", "--json").stdout)["participants"]
@@ -3123,7 +3135,8 @@ class UiTests(UiCase):
         self.assertNotIn("outerHTML", text)
         self.assertNotIn("insertAdjacentHTML", text)
         self.assertNotIn("document.write", text)
-        self.assertNotRegex(text, r"https?://")    # nothing is fetched from anywhere else
+        # nothing is fetched from anywhere else (the SVG namespace is a name, not an address that anything opens)
+        self.assertNotRegex(text.replace("http://www.w3.org/2000/svg", ""), r"https?://")
 
     def test_the_scopes_the_roster_and_the_history_are_what_filo_knows(self) -> None:
         shown = self.join()
@@ -3167,6 +3180,45 @@ class UiTests(UiCase):
         refused = self.msg("ui", "--port", "70000")
         self.assertEqual(refused.returncode, 1)
         self.assertIn("--port", refused.stderr)
+
+
+class UiRosterTests(unittest.TestCase):
+    """What the viewer says of a roster does not change every second: what waits is told to the minute."""
+
+    def test_how_long_a_message_has_waited_is_rounded_down_to_the_minute(self) -> None:
+        spec = importlib.util.spec_from_file_location("filo_ui_server_test", ROOT / "ui" / "server.py")
+        assert spec is not None and spec.loader is not None
+        server = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(server)
+
+        class Registration:
+            name, client, session = "worker2", "codex", "s1"
+
+        class Core:
+            @staticmethod
+            def participant_rows(_scope: str) -> list[object]:
+                return []
+
+            @staticmethod
+            def live_registrations(_scope: str) -> list[Registration]:
+                return [Registration()]
+
+            @staticmethod
+            def registration_waits(_rows: list[Registration]) -> dict[str, tuple[int, float]]:
+                return {"worker2": (9, 2879.9)}
+
+            @staticmethod
+            def registered_rows(rows: list[Registration], waits: dict[str, tuple[int, float]]) -> list[dict[str, object]]:
+                return [{"name": row.name, "client": row.client, "session": row.session, "waiting": waits[row.name][0],
+                         "oldest_seconds": int(waits[row.name][1])} for row in rows]
+
+            @staticmethod
+            def display_scope(scope: str) -> str:
+                return scope
+
+        roster = server.Viewer(Core(), "token").roster("/somewhere")
+        [row] = roster["registered"]
+        self.assertEqual((row["waiting"], row["oldest_seconds"]), (9, 2820))
 
 
 class UiOlderFiloTests(UiCase):

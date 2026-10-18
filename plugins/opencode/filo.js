@@ -52,6 +52,7 @@ const pool = ({ directory, onMessage, onEnded }) => {
     new Promise((resolve, reject) => {
       const child = spawn(FILO, ["join", "--as", name, "--json", "--parent", String(process.pid)], {
         cwd: directory,
+        env: { ...process.env, FILO_CLIENT: "opencode" }, // OpenCode sets no variable of its own that filo could tell it by
         stdio: ["ignore", "pipe", "pipe"],
       });
       // The turn that runs filo_join is itself busy, so early messages wait for it to end.

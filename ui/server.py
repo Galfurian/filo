@@ -63,9 +63,13 @@ class Viewer:
         participants = self.core.participant_rows(scope)
         registered = self.core.live_registrations(scope)
         waits = self.core.registration_waits(registered)
+        shown = self.core.registered_rows(registered, waits)
+        for row in shown:    # to the minute: the page shows minutes, and a number that changes every second is a roster event
+            if "oldest_seconds" in row:
+                row["oldest_seconds"] = int(row["oldest_seconds"]) // 60 * 60
         value = {"scope": self.core.display_scope(scope),
                  "participants": [asdict(row) for row in participants],
-                 "registered": self.core.registered_rows(registered, waits)}
+                 "registered": shown}
         with self._lock:
             self._roster_cache[scope] = (time.monotonic(), value)
         return value
