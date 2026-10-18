@@ -1828,6 +1828,22 @@ def install_directory() -> Path:
     return script.parent
 
 
+def ui_command(args: argparse.Namespace) -> int:
+    """Show the pool in a browser: the viewer is `ui/server.py`, next to this file, and optional."""
+    import importlib.util
+    server = Path(os.path.realpath(__file__)).parent / "ui" / "server.py"
+    if not server.is_file():
+        raise UserError(f"ui: the viewer is not here ({server}): it comes with a release or a checkout of filo")
+    if not 0 <= args.port <= 65535:
+        raise UserError("ui: --port must be between 0 and 65535")
+    spec = importlib.util.spec_from_file_location("filo_ui_server", server)
+    if spec is None or spec.loader is None:
+        raise UserError(f"ui: cannot load {server}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return int(module.run(sys.modules[__name__], args.port, args.open))
+
+
 def upgrade_command(args: argparse.Namespace) -> int:
     """Say whether a newer release exists and, unless --check, install it with that release's get.sh."""
     latest = latest_version()
@@ -1978,6 +1994,10 @@ def command_parser() -> argparse.ArgumentParser:
     upgrade_parser = sub.add_parser("upgrade", help="install the newest release, if this filo came from get.sh")
     upgrade_parser.add_argument("--check", action="store_true", help="only say whether a newer release exists")
     upgrade_parser.add_argument("-y", "--yes", action="store_true", help="do not ask before upgrading")
+
+    ui_parser = sub.add_parser("ui", help="show the pool in a browser (read-only, on this computer, until Ctrl-C)")
+    ui_parser.add_argument("--port", type=int, default=0, help="the port to listen on (default: one that is free)")
+    ui_parser.add_argument("--open", action="store_true", help="open the page in the default browser")
 
     who_parser = sub.add_parser("who", help="list participants")
     scope_argument(who_parser)
@@ -2217,6 +2237,8 @@ def main(argv: list[str] | None = None) -> int:
             return rename(args)
         if args.command == "upgrade":
             return upgrade_command(args)
+        if args.command == "ui":
+            return ui_command(args)
         if args.command == "who":
             if args.all and args.scope:
                 raise UserError("who: --all lists every scope, so it does not take --scope")

@@ -10,12 +10,12 @@ license-files = ["LICENSE"]
 dev = ["actionlint-py", "hypothesis", "mypy", "pyright", "ruff", "zizmor"]
 
 [tool.pyright]
-include = ["filo.py", "tests"]
-strict = ["filo.py"]
+include = ["filo.py", "ui/server.py", "tests"]
+strict = ["filo.py", "ui/server.py"]
 pythonVersion = "3.10"
 enableTypeIgnoreComments = false
 
 [tool.mypy]
-files = ["filo.py"]
+files = ["filo.py", "ui/server.py"]
 python_version = "3.10"
 strict = true
