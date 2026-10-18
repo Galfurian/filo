@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -3046,3 +3047,120 @@ class EventLogTests(RuntimeCase):
         bodies = [str(event["body"]) for event in self.kinds("message")]
         self.assertTrue(bodies[-1].startswith("message 39"))
         self.assertNotIn("message 00", " ".join(bodies))
+
+
+class UiTests(RuntimeCase):
+    """`filo ui`: a viewer in a browser. It only reads, it answers on this computer only, and only to whoever has
+    the token that it printed: a page on the web must not read a pool's messages through the browser."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.viewer = subprocess.Popen([sys.executable, str(SCRIPT), "ui", "--port", "0"], cwd=self.scope,
+                                       env=self.environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(self.stop_viewer)
+        assert self.viewer.stdout is not None
+        line = self.viewer.stdout.readline()
+        found = re.match(r"filo ui: http://127\.0\.0\.1:(\d+)/\?token=(\S+)", line)
+        assert found is not None, line
+        self.port, self.token = int(found.group(1)), found.group(2)
+        self.shown = ""
+
+    def stop_viewer(self) -> None:
+        self.viewer.send_signal(signal.SIGINT)
+        try:
+            self.viewer.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.viewer.kill()
+        for pipe in (self.viewer.stdout, self.viewer.stderr):
+            if pipe is not None:
+                pipe.close()
+
+    def get(self, path: str, token: str | None = "", host: str | None = None,
+            cookie: str | None = None) -> tuple[int, dict[str, str], bytes]:
+        import http.client
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        headers = {"Host": host or f"127.0.0.1:{self.port}"}
+        if cookie:
+            headers["Cookie"] = cookie
+        joined = path + (("&" if "?" in path else "?") + f"token={self.token if token == '' else token}" if token is not None else "")
+        connection.request("GET", joined, headers=headers)
+        response = connection.getresponse()
+        body = response.read()
+        result = (response.status, {key.lower(): value for key, value in response.getheaders()}, body)
+        connection.close()
+        return result
+
+    def join(self) -> str:
+        self.listen("boss")
+        self.shown = json.loads(self.msg("who", "--json").stdout)["scope"]
+        return self.shown
+
+    def test_without_the_token_or_for_another_host_nothing_is_answered(self) -> None:
+        self.assertEqual(self.get("/api/scopes", token=None)[0], 403)
+        self.assertEqual(self.get("/api/scopes", token="wrong")[0], 403)
+        self.assertEqual(self.get("/api/scopes", host="evil.example")[0], 403)    # DNS rebinding
+        self.assertEqual(self.get("/api/scopes", host=f"evil.example:{self.port}")[0], 403)
+        self.assertEqual(self.get("/api/scopes")[0], 200)
+
+    def test_the_page_comes_with_a_cookie_and_a_policy_that_lets_only_its_own_script_run(self) -> None:
+        status, headers, body = self.get("/")
+        self.assertEqual(status, 200)
+        self.assertIn("httponly", headers["set-cookie"].lower())
+        self.assertIn("samesite=strict", headers["set-cookie"].lower())
+        nonce = re.search(r"script-src 'nonce-([^']+)'", headers["content-security-policy"])
+        assert nonce is not None
+        self.assertIn(f'nonce="{nonce.group(1)}"'.encode(), body)
+        self.assertIn("default-src 'none'", headers["content-security-policy"])
+        cookie = headers["set-cookie"].split(";")[0]
+        self.assertEqual(self.get("/api/scopes", token=None, cookie=cookie)[0], 200)    # the page needs no token after
+
+    def test_what_comes_from_the_pool_is_never_put_in_the_page_as_markup(self) -> None:
+        text = (SCRIPT.parent / "ui" / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn("innerHTML", text)
+        self.assertNotIn("outerHTML", text)
+        self.assertNotIn("insertAdjacentHTML", text)
+        self.assertNotIn("document.write", text)
+        self.assertNotRegex(text, r"https?://")    # nothing is fetched from anywhere else
+
+    def test_the_scopes_the_roster_and_the_history_are_what_filo_knows(self) -> None:
+        shown = self.join()
+        self.assertEqual(self.msg("send", "--to", "boss", "--from", "me", "--message", "<b>hi</b>").returncode, 0)
+        scopes = json.loads(self.get("/api/scopes")[2])["scopes"]
+        self.assertIn(shown, [item["scope"] for item in scopes])
+        status, _, body = self.get("/api/state?scope=" + urllib.parse.quote(shown))
+        self.assertEqual(status, 200)
+        state = json.loads(body)
+        self.assertEqual([row["name"] for row in state["participants"]], ["boss"])
+        [message] = [event for event in state["events"] if event["kind"] == "message"]
+        self.assertEqual((message["from"], message["to"], message["state"], message["body"]),
+                         ("me", "boss", "delivered", "<b>hi</b>"))    # as text: the page shows it as text
+        self.assertGreater(state["offset"], 0)
+
+    def test_only_a_scope_that_filo_knows_can_be_asked_for(self) -> None:
+        self.join()
+        for asked in ("/etc", "/", "../../etc", "keyword:none", ""):
+            self.assertEqual(self.get("/api/state?scope=" + urllib.parse.quote(asked))[0], 404, asked)
+        self.assertEqual(self.get("/nothing")[0], 404)
+
+    def test_a_message_that_is_sent_while_the_stream_is_open_arrives_on_it(self) -> None:
+        import http.client
+        shown = self.join()
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        connection.request("GET", f"/api/stream?scope={urllib.parse.quote(shown)}&offset=0&token={self.token}",
+                           headers={"Host": f"127.0.0.1:{self.port}"})
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertIn("text/event-stream", response.getheader("Content-Type", ""))
+        self.assertEqual(self.msg("send", "--to", "boss", "--from", "me", "--message", "live one").returncode, 0)
+        seen = ""
+        deadline = time.monotonic() + 8
+        while "live one" not in seen and time.monotonic() < deadline:
+            seen += response.fp.readline().decode("utf-8") if response.fp is not None else ""    # type: ignore[union-attr]
+        connection.close()
+        self.assertIn("event: events", seen)
+        self.assertIn("live one", seen)
+
+    def test_a_port_that_cannot_exist_is_refused(self) -> None:
+        refused = self.msg("ui", "--port", "70000")
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("--port", refused.stderr)

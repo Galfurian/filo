@@ -121,9 +121,20 @@ filo leave --name claude                    # a registered session or a listener
 filo profiles                               # the roles you can join as
 filo profile manager                        # print one
 
+filo ui                                     # the pool in a browser: who is there and what they say (read-only)
 filo upgrade --check                        # is there a newer release? (the only command that uses the network)
 filo upgrade                                # install it, if this filo came from get.sh
 ```
+
+### Watching a pool
+
+`filo ui` prints an address (`http://127.0.0.1:PORT/?token=…`): open it and you see who is in a scope and
+what they say to each other, as chat bubbles or as a plain log, live. It is one small page served by the
+standard library, with nothing to install and nothing fetched from the web. It only reads what filo
+keeps (the roster that `filo who` shows, with the same clean-up of what is gone, and the log of each scope,
+see [What it keeps](#what-it-keeps-and-forgets)), listens on `127.0.0.1` only, answers only to the token in
+the address and to that host name, and stops with Ctrl-C. `--port N` picks the port and `--open` opens the
+browser.
 
 ### Names and scopes
 

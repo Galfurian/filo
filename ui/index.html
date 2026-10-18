@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>filo</title>
+<style nonce="__NONCE__">
+:root {
+  --bg: #f4f1ec; --panel: #ffffff; --ink: #24211d; --muted: #8b857b; --line: #e3ddd2;
+  --me: #e8f1ff; --bubble: #ffffff; --shadow: 0 1px 2px rgba(40,30,10,.08), 0 6px 18px rgba(40,30,10,.06);
+  --ok: #2f9e6e; --queued: #d08a1c; --off: #8a6fd1; --bad: #cc4b4b;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #15171c; --panel: #1d2027; --ink: #e8e6e1; --muted: #8f93a0; --line: #2b2f39;
+          --me: #1f3350; --bubble: #232731; --shadow: 0 1px 2px rgba(0,0,0,.5), 0 6px 18px rgba(0,0,0,.35); }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+       display: grid; grid-template-columns: 280px 1fr; grid-template-rows: auto 1fr; }
+header { grid-column: 1 / 3; display: flex; align-items: center; gap: 14px; padding: 12px 18px;
+         background: var(--panel); border-bottom: 1px solid var(--line); }
+header h1 { margin: 0; font-size: 18px; letter-spacing: .02em; }
+header h1 span { color: var(--muted); font-weight: 400; }
+header select, header button { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line);
+         border-radius: 8px; padding: 5px 10px; cursor: pointer; }
+header .spacer { flex: 1; }
+header button.on { background: var(--ink); color: var(--bg); }
+#live { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); display: inline-block; }
+#live.up { background: var(--ok); box-shadow: 0 0 0 4px rgba(47,158,110,.18); }
+aside { padding: 14px; overflow: auto; border-right: 1px solid var(--line); }
+aside h2 { margin: 4px 4px 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.card { display: flex; gap: 10px; align-items: center; padding: 9px 10px; margin-bottom: 8px;
+        background: var(--panel); border-radius: 12px; box-shadow: var(--shadow); }
+.card .who { min-width: 0; }
+.card .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.card .sub { font-size: 12px; color: var(--muted); }
+.avatar { flex: none; width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center;
+          color: #fff; font-weight: 700; font-size: 15px; }
+.small { width: 26px; height: 26px; font-size: 12px; }
+.warn { color: var(--queued); }
+main { overflow: auto; padding: 18px 22px 40px; position: relative; }
+.empty { color: var(--muted); text-align: center; margin-top: 80px; }
+.row { display: flex; gap: 10px; margin: 10px 0; align-items: flex-end; max-width: 880px; }
+.bubble { background: var(--bubble); border-radius: 16px 16px 16px 4px; padding: 9px 13px; box-shadow: var(--shadow);
+          min-width: 0; max-width: 100%; }
+.bubble .head { font-size: 12px; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 2px; }
+.bubble .head b { color: var(--ink); }
+.bubble .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.badge { font-size: 11px; border-radius: 999px; padding: 0 8px; color: #fff; align-self: center; }
+.badge.delivered { background: var(--ok); } .badge.queued { background: var(--queued); }
+.badge.offline { background: var(--off); } .badge.unreachable, .badge.failed { background: var(--bad); }
+.note { text-align: center; color: var(--muted); font-size: 12px; margin: 14px 0; }
+#more { position: sticky; bottom: 10px; margin: 0 auto; display: none; width: max-content; background: var(--ink);
+        color: var(--bg); border-radius: 999px; padding: 5px 14px; cursor: pointer; font-size: 13px; }
+body[data-theme="log"] .row { display: block; margin: 0; max-width: none; }
+body[data-theme="log"] .avatar { display: none; }
+body[data-theme="log"] .bubble { border-radius: 0; box-shadow: none; background: transparent; padding: 2px 0;
+        font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; border-bottom: 1px solid var(--line); }
+body[data-theme="log"] .bubble .head { display: inline-flex; margin: 0 10px 0 0; }
+body[data-theme="log"] .bubble .text { display: inline; }
+@media (max-width: 760px) { body { grid-template-columns: 1fr; } aside { display: none; } header { grid-column: 1; } }
+</style>
+</head>
+<body data-theme="chat">
+<header>
+  <h1>filo <span>pool</span></h1>
+  <select id="scope" title="scope"></select>
+  <span class="spacer"></span>
+  <button data-theme="chat" class="on">Chat</button>
+  <button data-theme="log">Log</button>
+  <span id="live" title="live"></span>
+</header>
+<aside><h2>In this scope</h2><div id="roster"></div></aside>
+<main id="main"><div id="feed"></div><div id="more">new messages</div></main>
+<script nonce="__NONCE__">
+"use strict";
+// Everything that comes from the pool is text from an agent: it goes in with textContent and nowhere else.
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+// A colour for each one: the client sets the family (Claude blue, Codex green, agy amber, OpenCode violet) and the
+// name moves it a little; a listener has no client, so its name alone picks the colour.
+const COLORS = { claude: 215, codex: 155, agy: 32, opencode: 275 };
+const hue = (name, client) => { let h = 7; for (const c of name) h = (h * 33 + c.charCodeAt(0)) % 3600; return client in COLORS ? (COLORS[client] + (h % 30) - 15 + 360) % 360 : (h * 37) % 360; };
+const avatar = (name, client, small) => { const a = el("div", "avatar" + (small ? " small" : ""), name.slice(0, 1).toUpperCase()); a.style.background = `hsl(${hue(name, client)} 55% 48%)`; return a; };
+const clock = (ns) => new Date(Number(ns) / 1e6).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+const kinds = new Map();   // name -> client, as the roster says it
+let source = null, current = null;
+
+function showRoster(r) {
+  const box = $("roster"); box.replaceChildren(); kinds.clear();
+  const rows = [...r.participants.map((p) => ({ name: p.name, client: "listener", sub: "listener · pid " + p.pid, old: p.version, version: p.version })),
+                ...r.registered.map((g) => ({ name: g.name, client: g.client, sub: g.client + " · registered", waiting: g.waiting, oldest: g.oldest_seconds }))];
+  if (!rows.length) box.append(el("div", "sub", "nobody is connected"));
+  for (const row of rows) {
+    kinds.set(row.name, row.client);
+    const card = el("div", "card"), who = el("div", "who");
+    who.append(el("div", "name", row.name), el("div", "sub", row.sub));
+    if (row.waiting) who.append(el("div", "sub warn", row.waiting + " waiting, oldest " + Math.round(row.oldest / 60) + " min"));
+    card.append(avatar(row.name, row.client), who); box.append(card);
+  }
+}
+
+function addEvent(e, feed) {
+  if (e.kind === "presence") { feed.append(el("div", "note", `${clock(e.t)} · ${e.name} ${e.event}`)); return; }
+  if (e.kind !== "message") return;
+  const row = el("div", "row"), bubble = el("div", "bubble"), head = el("div", "head");
+  head.append(el("b", "", e.from), el("span", "", "→ " + e.to), el("span", "", clock(e.t)), el("span", "badge " + e.state, e.state));
+  bubble.append(head, el("div", "text", e.body ?? ""));
+  if (e.error) bubble.append(el("div", "sub warn", e.error));
+  if (e.truncated) bubble.append(el("div", "sub", `cut: ${e.length} characters`));
+  row.append(avatar(e.from, kinds.get(e.from)), bubble); feed.append(row);
+}
+
+function append(events) {
+  const main = $("main"), feed = $("feed"), atEnd = main.scrollHeight - main.scrollTop - main.clientHeight < 80;
+  for (const e of events) addEvent(e, feed);
+  if (atEnd) main.scrollTop = main.scrollHeight; else if (events.length) $("more").style.display = "block";
+}
+
+async function open(scope) {
+  current = scope; if (source) source.close();
+  const state = await (await fetch("/api/state?scope=" + encodeURIComponent(scope))).json();
+  showRoster(state); $("feed").replaceChildren();
+  if (!state.events.length) $("feed").append(el("div", "empty", "Nothing has been said in this scope yet."));
+  else append(state.events);
+  $("main").scrollTop = $("main").scrollHeight;
+  source = new EventSource(`/api/stream?scope=${encodeURIComponent(scope)}&offset=${state.offset}`);
+  source.onopen = () => $("live").classList.add("up"); source.onerror = () => $("live").classList.remove("up");
+  source.addEventListener("roster", (m) => showRoster(JSON.parse(m.data)));
+  source.addEventListener("events", (m) => { const empty = $("feed").querySelector(".empty"); if (empty) empty.remove(); append(JSON.parse(m.data).events); });
+}
+
+async function start() {
+  const { scopes } = await (await fetch("/api/scopes")).json(), select = $("scope");
+  for (const s of scopes) { const o = el("option", "", `${s.scope}  (${s.participants + s.registered})`); o.value = s.scope; select.append(o); }
+  select.onchange = () => { location.hash = select.value; open(select.value); };
+  if (!scopes.length) { $("feed").append(el("div", "empty", "No scope has anybody in it. Run /filo in a session.")); return; }
+  const wanted = decodeURIComponent(location.hash.slice(1)), first = scopes.find((s) => s.scope === wanted) ?? scopes.find((s) => s.participants + s.registered) ?? scopes[0];
+  select.value = first.scope; open(first.scope);
+}
+for (const b of document.querySelectorAll("button[data-theme]")) b.onclick = () => {
+  document.body.dataset.theme = b.dataset.theme; localStorage.setItem("filo-theme", b.dataset.theme);
+  for (const o of document.querySelectorAll("button[data-theme]")) o.classList.toggle("on", o === b);
+};
+const saved = localStorage.getItem("filo-theme"); if (saved) document.querySelector(`button[data-theme="${saved}"]`)?.click();
+$("more").onclick = () => { $("main").scrollTop = $("main").scrollHeight; $("more").style.display = "none"; };
+$("main").onscroll = () => { const m = $("main"); if (m.scrollHeight - m.scrollTop - m.clientHeight < 80) $("more").style.display = "none"; };
+start();
+</script>
+</body>
+</html>
