@@ -2920,6 +2920,12 @@ class DeliveryStateTests(RuntimeCase):
         self.assertIn("47 min", sent.stdout)
         self.assertIn("busy", sent.stdout)
 
+    def test_a_send_to_a_session_whose_queue_is_hours_old_says_it_is_stuck(self) -> None:
+        self.codex(waiting=4, minutes=200)
+        sent = self.msg("send", "--to", "worker2", "--from", "me", "--message", "hi")
+        self.assertIn("stuck in one long turn", sent.stdout)
+        self.assertIn("interrupt", sent.stdout)
+
     def test_who_shows_what_waits_for_a_registered_session(self) -> None:
         self.codex(waiting=3, minutes=30)
         who = json.loads(self.msg("who", "--json").stdout)
@@ -2928,7 +2934,7 @@ class DeliveryStateTests(RuntimeCase):
         self.assertTrue(29 * 60 <= row["oldest_seconds"] <= 31 * 60, row)
         text = self.msg("who").stdout
         self.assertIn("3 waiting", text)
-        self.assertIn("oldest 30 min", text)
+        self.assertRegex(text, r"oldest (29|30) min")
 
     def test_a_client_that_cannot_say_what_waits_is_listed_without_it(self) -> None:
         self.assertEqual(self.msg("register", "--as", "gemini", env={"GEMINI_SESSION": "gem-123456"}).returncode, 0)
@@ -3258,6 +3264,18 @@ class UiOlderFiloTests(UiCase):
         [queued] = [event for event in self.state()["events"] if event["kind"] == "message"]
         self.assertEqual((queued["to"], queued["state"], queued["body"]), ("worker2", "queued", None))
         self.assertIsNone(queued["from"])
+
+    def test_a_message_without_text_says_whether_it_is_older_than_the_log_or_was_not_written_to_it(self) -> None:
+        directory = self.scope_directory()    # joining is the first entry of the log
+        acks = directory / "acks"
+        acks.mkdir(exist_ok=True)
+        for identifier, offset in (("18df0000000000c1-aaaaaa", -3600 * 10**9), ("18df0000000000c2-bbbbbb", 5 * 10**9)):
+            (acks / f"{identifier}.json").write_text(json.dumps({
+                "id": identifier, "to": "worker2", "how": "queued to codex thread 01aa",
+                "at_ns": time.time_ns() + offset}), encoding="utf-8")
+        by_id = {event["id"]: event for event in self.state()["events"] if event["kind"] == "message"}
+        self.assertIs(by_id["18df0000000000c1-aaaaaa"]["before_log"], True)     # sent before there was a log: nothing kept it
+        self.assertIs(by_id["18df0000000000c2-bbbbbb"]["before_log"], False)    # sent after: its sender's filo did not write it
 
     def test_a_message_that_is_in_the_log_and_in_an_inbox_is_shown_once(self) -> None:
         self.join()
