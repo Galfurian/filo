@@ -268,8 +268,9 @@ travel with the skill link, so they need no install of their own.
   message is in the queue of the client (Codex, agy, a Claude session) and it reads it when it is
   free. A session that never stops, one very long turn after another, never takes them. `filo who`
   shows how many wait for a registered session and for how long (for Codex it is read from Codex's
-  own queue, a file that can change; for the others filo cannot say). Interrupt that session so
-  that it takes them, and send one message that sums up what is still true.
+  own queue, a file that can change; for the others filo cannot say). When the oldest has waited
+  more than 30 minutes, `send` says the session is likely stuck and the viewer shows the badge in red.
+  Interrupt that session so that it takes them, and send one message that sums up what is still true.
 - **`runs filo 0.4.3, this is 0.4.6`** in `filo who`: a listener goes on running the filo that
   started it, whatever is installed since, so it lacks what came later. Its session joins again
   (`filo leave --name NAME`, then `/filo`). The `filo` command that each agent runs is always the

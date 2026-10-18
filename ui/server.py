@@ -134,6 +134,25 @@ class Viewer:
         return {"kind": "message", "id": data.get("id") or path.stem, "from": None, "to": data.get("to"),
                 "state": "queued", "body": None, "t": int(data.get("at_ns") or mtime), "kept": "ack"}
 
+    def log_start(self, scope: str) -> int | None:
+        """When the log of the scope begins: what is older than that was not kept by a filo that writes it."""
+        try:
+            with open(self.log_path(scope), "rb") as handle:
+                first: Any = json.loads(handle.readline())
+        except (OSError, ValueError):
+            return None
+        if not isinstance(first, dict):
+            return None
+        stamp: Any = cast(dict[str, Any], first).get("t")
+        return int(stamp) if isinstance(stamp, int) else None
+
+    def mark(self, scope: str, event: dict[str, Any]) -> dict[str, Any]:
+        """Say of an entry that came from an older file whether it was sent before the log began or after: after, and
+        without text, means that the filo of its sender did not write it."""
+        start = self.log_start(scope)
+        event["before_log"] = start is None or int(event.get("t", 0)) < start
+        return event
+
     def new_legacy(self, scope: str, since_ns: int, seen: set[str]) -> list[dict[str, Any]]:
         """The entries from those files that came after ``since_ns`` and that were not looked at before."""
         fresh: list[dict[str, Any]] = []
@@ -149,7 +168,7 @@ class Viewer:
                 continue
             event = self.legacy_event(path, kind)
             if event is not None:
-                fresh.append(event)
+                fresh.append(self.mark(scope, event))
         return sorted(fresh, key=lambda item: int(item.get("t", 0)))
 
     def history(self, scope: str) -> tuple[list[dict[str, Any]], int, int]:
@@ -164,7 +183,7 @@ class Viewer:
             event = self.legacy_event(path, kind)
             if event is not None and str(event["id"]) not in known:
                 known.add(str(event["id"]))
-                entries.append(event)
+                entries.append(self.mark(scope, event))
         entries.sort(key=lambda item: int(item.get("t", 0)))
         return entries[-HISTORY:], offset, since
 

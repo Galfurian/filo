@@ -161,7 +161,9 @@ four, whichever client is at the other end:
   when it is free. **Do not send it again, and do not wait for an answer here or ask `status`
   over and over**: filo cannot see whether a queued message was read. When the line says that
   earlier messages are still waiting, the recipient is probably busy: tell the user if the
-  message cannot wait, instead of sending more.
+  message cannot wait, instead of sending more. When the oldest has waited more than 30
+  minutes, the line says the session is likely stuck in one long turn and has read none of them:
+  tell the user to interrupt it, and do not count on an answer.
 - `offline` — the recipient is known but not connected. The message waits and arrives when it
   joins again. Do not send it twice.
 - `unreachable` (an error, on stderr) — nobody by that name; the line says why. Tell the user

@@ -1448,10 +1448,18 @@ def duration(seconds: float) -> str:
     return f"{int(seconds // 3600)} h"
 
 
+STUCK_AFTER = 1800    # seconds a message may wait in a client's queue before the session counts as stuck
+
+
 def waiting_note(count: int, oldest: float) -> str:
     plural = count != 1
-    return (f"{count} earlier message{'s' if plural else ''} {'are' if plural else 'is'} still waiting there, the "
+    note = (f"{count} earlier message{'s' if plural else ''} {'are' if plural else 'is'} still waiting there, the "
             f"oldest for {duration(oldest)}: it is probably busy.")
+    if oldest >= STUCK_AFTER:
+        note += (" That is too long for a busy session: it is likely stuck in one long turn and has read none of them. "
+                 "Nothing reaches it until that turn ends, so do not count on an answer, and tell the user to "
+                 "interrupt it.")
+    return note
 
 
 def deliver_offline(scope: str, recipient: str, sender: str, body: str, message_id: str) -> str:

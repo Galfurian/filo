@@ -109,6 +109,7 @@ body[data-theme="board"] #board { display: grid; }
 #flist .said { font-size: 14.5px; }
 .desk .col { min-width: 0; flex: 1; }
 .badge-q { display: inline-block; font-size: 11.5px; border-radius: 999px; padding: 1px 9px; margin-top: 3px; color: #1a1205; background: var(--queued); white-space: nowrap; }
+.badge-q.stale { color: #fff; background: var(--bad); }
 #fly { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 20; }
 .packet { position: fixed; left: 0; top: 0; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 2px; z-index: 21; pointer-events: none; offset-rotate: 0deg; }
 @media (max-width: 760px) { body { grid-template-columns: 1fr; } aside { display: none; } header { grid-column: 1; } }
@@ -138,6 +139,9 @@ const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls)
 // name moves it a little; a listener has no client, so its name alone picks the colour.
 const COLORS = { claude: 215, codex: 155, agy: 32, opencode: 275 };
 const hue = (name, client) => { let h = 7; for (const c of name) h = (h * 33 + c.charCodeAt(0)) % 3600; return client in COLORS ? (COLORS[client] + (h % 30) - 15 + 360) % 360 : (h * 37) % 360; };
+// Why a message has no text: it was sent before the log of this pool began (nothing kept it), or after, and then the filo of its sender
+// did not write it (an older filo, or FILO_NO_LOG=1).
+const noText = (e) => e.before_log === false ? "no text in the log: the filo of its sender did not write it (an older filo, or FILO_NO_LOG)" : "sent before this pool kept a log: its text is gone";
 const unknown = () => { const a = el("div", "avatar", "?"); a.style.background = "var(--muted)"; return a; };
 const avatar = (name, client, small) => { const a = el("div", "avatar" + (small ? " small" : ""), name.slice(0, 1).toUpperCase()); a.style.background = `hsl(${hue(name, client)} 55% 48%)`; return a; };
 const clock = (ns) => new Date(Number(ns) / 1e6).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
@@ -193,7 +197,7 @@ function renderDesk(name, popLast) {
     const m = el("div", "said" + (e.lost ? " lost" : "") + (popLast && i === list.length - 1 ? " pop" : ""));
     const who = e.lost ? e.to : (e.from ?? "someone"); m.style.setProperty("--from", hue(who, kinds.get(who)));
     m.append(el("div", "to", `${e.lost ? "→" : "←"} ${who} · ${clock(e.t)} · ${e.state}`),
-             el("div", "text", e.lost ? "nobody there to receive it" : (e.body ?? "its text was not kept")));
+             el("div", "text" + (e.body == null ? " dim" : ""), e.lost ? "nobody there to receive it" : (e.body ?? noText(e))));
     if (m.classList.contains("pop")) m.addEventListener("animationend", () => m.classList.remove("pop"), { once: true });
     d.says.append(m);
   });
@@ -324,7 +328,7 @@ function renderFocus(popLast) {
   for (const e of shown) {
     const who = other(focused, e), m = el("div", "said" + (e.lost ? " lost" : ""));
     m.style.setProperty("--from", hue(e.from ?? who, kinds.get(e.from ?? who)));
-    m.append(el("div", "to", `${e.to === focused ? "←" : "→"} ${who} · ${clock(e.t)} · ${e.state}`), el("div", "text", e.lost ? "nobody there to receive it" : (e.body ?? "its text was not kept")));
+    m.append(el("div", "to", `${e.to === focused ? "←" : "→"} ${who} · ${clock(e.t)} · ${e.state}`), el("div", "text" + (e.body == null ? " dim" : ""), e.lost ? "nobody there to receive it" : (e.body ?? noText(e))));
     list.append(m);
   }
   list.scrollTop = stuck ? list.scrollHeight : before;
@@ -350,13 +354,14 @@ function showRoster(r) {
     kinds.set(row.name, row.client); const d = desk(row.name, row.client, row.sub); d.who.lastChild.textContent = row.sub ? " · " + row.sub : "";
     if (row.waiting > 0) {   // what waits in the queue of its client: it takes it when it is free, and a long wait means that it is busy
       if (!d.badge) { d.badge = el("div", "badge-q"); d.col.append(d.badge); }
+      d.badge.classList.toggle("stale", row.oldest >= 1800);
       d.badge.textContent = `${row.waiting} waiting · ${Math.max(1, Math.round(row.oldest / 60))} min`;
-      d.badge.title = `${row.waiting} messages wait in the queue of its client, the oldest for ${Math.max(1, Math.round(row.oldest / 60))} min: it is probably busy`;
+      d.badge.title = `${row.waiting} messages wait in the queue of its client, the oldest for ${Math.max(1, Math.round(row.oldest / 60))} min: ${row.oldest >= 1800 ? "it is likely stuck in one long turn" : "it is probably busy"}`;
     } else if (d.badge) { d.badge.remove(); d.badge = null; }
     if (!received.has(row.name)) received.set(row.name, []);
     const card = el("div", "card"), who = el("div", "who");
     who.append(el("div", "name", row.name), el("div", "sub", row.sub));
-    if (row.waiting) who.append(el("div", "sub warn", row.waiting + " waiting, oldest " + Math.round(row.oldest / 60) + " min"));
+    if (row.waiting) who.append(el("div", "sub warn", (row.oldest >= 1800 ? "stuck? " : "") + row.waiting + " waiting, oldest " + Math.round(row.oldest / 60) + " min"));
     card.append(avatar(row.name, row.client), who); box.append(card);
   }
   for (const [name, d] of desks) d.box.classList.toggle("gone", !kinds.has(name));
@@ -373,7 +378,7 @@ function addEvent(e, feed) {
   if (old && e.kept) return;                       // what an older filo kept says less than the log does
   const sender = e.from ?? "someone", row = el("div", "row"), bubble = el("div", "bubble"), head = el("div", "head");
   head.append(el("b", "", sender), el("span", "", "→ " + e.to), el("span", "", clock(e.t)), el("span", "badge " + e.state, e.state));
-  bubble.append(head, e.body === null || e.body === undefined ? el("div", "text dim", "its text was not kept") : el("div", "text", e.body));
+  bubble.append(head, e.body === null || e.body === undefined ? el("div", "text dim", noText(e)) : el("div", "text", e.body));
   if (e.error) bubble.append(el("div", "sub warn", e.error));
   if (e.truncated) bubble.append(el("div", "sub", `cut: ${e.length} characters`));
   row.append(e.from ? avatar(sender, kinds.get(sender)) : unknown(), bubble);
