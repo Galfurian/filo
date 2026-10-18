@@ -80,6 +80,15 @@ def env_seconds(name: str, default: float) -> float:
         return default
 
 
+LOG_BODY_LIMIT = 20_000    # characters of a message that the log of a scope keeps
+LOG_KEEP_SECONDS = 86400.0
+
+
+def log_limit() -> int:
+    """How large the log of a scope may grow before its oldest entries are dropped."""
+    return int(env_seconds("FILO_LOG_LIMIT", 4_000_000.0))
+
+
 def spool_ttl() -> float:
     """How long an undelivered message is kept."""
     return env_seconds("FILO_SPOOL_TTL", 3600.0)
@@ -825,6 +834,59 @@ def prune_acks(scope: str) -> None:
             continue
 
 
+def log_body(body: str) -> JsonObject:
+    """The text of a message as the log keeps it: cut when it is long, and then it says how long it was."""
+    if len(body) <= LOG_BODY_LIMIT:
+        return {"body": body}
+    return {"body": body[:LOG_BODY_LIMIT], "truncated": True, "length": len(body)}
+
+
+def record_event(scope: str, event: JsonObject) -> None:
+    """Keep what passes through filo in this scope (a message with its state, somebody joining or leaving) in one
+    file that a viewer can follow, for a day and up to ``log_limit()`` bytes. Mode 0600, like everything else here.
+    It is best effort: a log that cannot be written never stops what it records. ``FILO_NO_LOG=1`` turns it off."""
+    if os.environ.get("FILO_NO_LOG"):
+        return
+    line = json.dumps({"t": time.time_ns(), **event}, ensure_ascii=False, separators=(",", ":")) + "\n"
+    try:
+        descriptor = os.open(scope_directory(scope) / "events.jsonl",
+                             os.O_RDWR | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except (OSError, UserError):
+        return
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)    # one writer at a time: the trimming below reads and rewrites it all
+        os.write(descriptor, line.encode("utf-8"))
+        if os.fstat(descriptor).st_size > log_limit():
+            trim_log(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)    # which also gives the lock back
+
+
+def trim_log(descriptor: int) -> None:
+    """Drop the oldest entries until the file is half of what it may be, and every one that is over a day old."""
+    chunks: list[bytes] = []
+    offset = 0
+    while chunk := os.pread(descriptor, 1 << 20, offset):
+        chunks.append(chunk)
+        offset += len(chunk)
+    keep: list[bytes] = []
+    size = 0
+    oldest_allowed = time.time_ns() - int(LOG_KEEP_SECONDS * 1e9)
+    for line in reversed(b"".join(chunks).splitlines(keepends=True)):
+        try:
+            when = int(parse_json(line).get("t", 0))
+        except (ValueError, AttributeError, TypeError):
+            continue
+        if when < oldest_allowed or size + len(line) > log_limit() // 2:
+            break
+        keep.append(line)
+        size += len(line)
+    os.ftruncate(descriptor, 0)
+    os.write(descriptor, b"".join(reversed(keep)))
+
+
 def message_status(scope: str, message_id: str) -> str:
     if not MESSAGE_ID.fullmatch(message_id):
         raise UserError("status: not a message id")
@@ -1229,6 +1291,7 @@ def register(args: argparse.Namespace) -> int:
         name = claim_free_name(scope, client, registration)
     mark_known(scope, name, "registered")
     remember_scope(scope)
+    record_event(scope, {"kind": "presence", "event": "registered", "name": name, "client": client})
     if args.json:
         print(json.dumps({"kind": "registered", "name": name, "client": client, "session": session}), flush=True)
     else:
@@ -1337,6 +1400,7 @@ def leave(args: argparse.Namespace) -> int:
             raise UserError("leave: this session is not registered here; pass --name NAME (see 'filo who')")
     for row in found:
         forget_registration(scope, row)
+        record_event(scope, {"kind": "presence", "event": "left", "name": row.name, "client": row.client})
         print(f"{row.name} left the pool; its name is free again and messages to it are refused")
     return 0
 
@@ -1507,6 +1571,7 @@ class Listener:
                                        "version": __version__})
         mark_known(self.scope, self.name, "listener")
         remember_scope(self.scope)
+        record_event(self.scope, {"kind": "presence", "event": "joined", "name": self.name, "client": "listener"})
         if self.detached:
             return    # `detach` tells the others once the command that started this has its answer
         notify(self.scope, self.name, "joined")
@@ -1594,6 +1659,7 @@ class Listener:
         self.server.close()
         unlink_if_present(self.socket_file)
         unlink_if_present(self.metadata)
+        record_event(self.scope, {"kind": "presence", "event": "left", "name": self.name, "client": "listener"})
         notify(self.scope, self.name, "left")
         if self.lock is not None:
             os.close(self.lock)
@@ -2121,7 +2187,16 @@ def send_command(args: argparse.Namespace, scope: str) -> int:
     body = message_body(args)
     recipient = valid_name(args.to, "--to")
     sender = valid_name(args.sender, "--from")
-    print(deliver_message(scope, recipient, sender, body, new_message_id()))
+    message_id = new_message_id()
+    event: JsonObject = {"kind": "message", "id": message_id, "from": sender, "to": recipient, **log_body(body)}
+    try:
+        line = deliver_message(scope, recipient, sender, body, message_id)
+    except UserError as exc:
+        record_event(scope, {**event, "state": "unreachable" if str(exc).startswith("unreachable") else "failed",
+                             "error": str(exc)})
+        raise
+    record_event(scope, {**event, "state": line.split(" ", 1)[0].rstrip(":")})
+    print(line)
     return 0
 
 

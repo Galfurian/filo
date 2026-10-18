@@ -2971,3 +2971,78 @@ class ListenerVersionTests(RuntimeCase):
         self.assertIn("runs an older filo", self.msg("who").stdout)
         [row] = json.loads(self.msg("who", "--json").stdout)["participants"]
         self.assertIsNone(row["version"])
+
+
+class EventLogTests(RuntimeCase):
+    """Everything that passes through filo in a scope is kept, for a day, in one file that a viewer can follow:
+    what is sent (to a listener or to a client's own queue), with its state, and who joins and leaves."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.record = add_gemini_adapter(self)
+
+    def events(self) -> list[dict[str, object]]:
+        found = list(self.runtime.glob("*/events.jsonl"))
+        if not found:
+            return []
+        return [json.loads(line) for line in found[0].read_text(encoding="utf-8").splitlines() if line]
+
+    def kinds(self, kind: str) -> list[dict[str, object]]:
+        return [event for event in self.events() if event["kind"] == kind]
+
+    def test_a_message_to_a_listener_is_kept_with_its_state_and_its_text(self) -> None:
+        self.listen("boss")
+        self.assertEqual(self.msg("send", "--to", "boss", "--from", "me", "--message", "build it").returncode, 0)
+        [message] = self.kinds("message")
+        self.assertEqual((message["from"], message["to"], message["state"], message["body"]),
+                         ("me", "boss", "delivered", "build it"))
+        self.assertRegex(str(message["id"]), r"^[0-9a-f]+-[0-9a-f]+$")
+        self.assertIsInstance(message["t"], int)
+
+    def test_a_message_to_a_registered_session_is_kept_too_and_it_is_queued(self) -> None:
+        self.assertEqual(self.msg("register", "--as", "gemini", env={"GEMINI_SESSION": "gem-123456"}).returncode, 0)
+        self.assertEqual(self.msg("send", "--to", "gemini", "--from", "me", "--message", "hello").returncode, 0)
+        [message] = self.kinds("message")
+        self.assertEqual((message["to"], message["state"], message["body"]), ("gemini", "queued", "hello"))
+
+    def test_a_message_that_could_not_be_sent_is_kept_as_unreachable(self) -> None:
+        sent = self.msg("send", "--to", "nobody", "--from", "me", "--message", "anyone?")
+        self.assertEqual(sent.returncode, 1)
+        [message] = self.kinds("message")
+        self.assertEqual((message["to"], message["state"], message["body"]), ("nobody", "unreachable", "anyone?"))
+        self.assertIn("not connected", str(message["error"]))
+
+    def test_who_joins_and_leaves_is_kept(self) -> None:
+        process, _, _ = self.listen("boss")
+        self.assertEqual(self.msg("register", "--as", "gemini", env={"GEMINI_SESSION": "gem-123456"}).returncode, 0)
+        process.terminate()
+        process.wait(timeout=5)
+        self.assertEqual(self.msg("leave", "--name", "gemini").returncode, 0)
+        seen = [(event["event"], event["name"], event["client"]) for event in self.kinds("presence")]
+        self.assertEqual(seen, [("joined", "boss", "listener"), ("registered", "gemini", "gemini"),
+                                ("left", "boss", "listener"), ("left", "gemini", "gemini")])
+
+    def test_the_file_is_private_and_a_long_text_is_cut_and_says_so(self) -> None:
+        self.listen("boss")
+        self.assertEqual(self.msg("send", "--to", "boss", "--from", "me", "--stdin", stdin="x" * 30_000).returncode, 0)
+        [message] = self.kinds("message")
+        self.assertEqual((len(str(message["body"])), message["truncated"], message["length"]), (20_000, True, 30_000))
+        [log] = self.runtime.glob("*/events.jsonl")
+        self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+
+    def test_it_can_be_turned_off(self) -> None:
+        self.listen("boss", env={"FILO_NO_LOG": "1"})
+        sent = self.msg("send", "--to", "boss", "--from", "me", "--message", "hi", env={"FILO_NO_LOG": "1"})
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        self.assertEqual(self.events(), [])
+
+    def test_the_file_is_kept_to_its_size_and_the_newest_stay(self) -> None:
+        self.environment["FILO_LOG_LIMIT"] = "6000"
+        self.listen("boss")
+        for number in range(40):
+            self.msg("send", "--to", "boss", "--from", "me", "--message", f"message {number:02d} " + "y" * 150)
+        [log] = self.runtime.glob("*/events.jsonl")
+        self.assertLessEqual(log.stat().st_size, 6000)
+        bodies = [str(event["body"]) for event in self.kinds("message")]
+        self.assertTrue(bodies[-1].startswith("message 39"))
+        self.assertNotIn("message 00", " ".join(bodies))
