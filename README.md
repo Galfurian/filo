@@ -133,8 +133,22 @@ what they say to each other, as chat bubbles or as a plain log, live. It is one 
 standard library, with nothing to install and nothing fetched from the web. It only reads what filo
 keeps (the roster that `filo who` shows, with the same clean-up of what is gone, and the log of each scope,
 see [What it keeps](#what-it-keeps-and-forgets)), listens on `127.0.0.1` only, answers only to the token in
-the address and to that host name, and stops with Ctrl-C. `--port N` picks the port and `--open` opens the
+the address and to that host name, and stops with Ctrl-C. A box says which client its entity runs under (Claude,
+Codex, OpenCode, agy): for a registered session that is its client, and a listener says it from the variable that its
+client sets in the shell of a session (`FILO_CLIENT=name` states it, as the OpenCode plugin does). `--port N` picks the port and `--open` opens the
 browser.
+
+Each entity has a box, and the boxes fill the page (they are laid out again when it is resized). When one entity writes to
+another an arrow is routed through the gaps between the boxes, from the sender to the recipient, and the message appears
+there. A box scrolls through everything the page has of its history and follows what comes while it is at the bottom,
+`⤢` (or a double click on the title) opens a sheet with the whole conversation of that entity, in both directions, which
+can be filtered by who it talks with and searched, and a Codex session whose client holds messages for it says how many
+and for how long. Light or dark follows the browser.
+
+A pool whose filo does not write the log yet (older than the one that added it) is shown too, from what
+those versions kept: what their listeners received in the last day, as delivered messages, and what was
+handed to the queue of Codex, agy or a Claude session, as queued messages with no sender and no text,
+which they did not keep. From the first message that a newer filo sends, the log has all of it.
 
 ### Names and scopes
 

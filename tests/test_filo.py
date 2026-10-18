@@ -2953,6 +2953,18 @@ class ListenerVersionTests(RuntimeCase):
                 metadata[key] = value
         metadata_file.write_text(json.dumps(metadata), encoding="utf-8")
 
+    def test_a_listener_says_which_client_it_runs_under(self) -> None:
+        markers = ("FILO_CLIENT", "CLAUDECODE", "CODEX_THREAD_ID", "ANTIGRAVITY_CONVERSATION_ID")
+        for name in markers:
+            self.environment.pop(name, None)
+        self.listen("plain")
+        self.listen("named", env={"FILO_CLIENT": "opencode"})
+        self.listen("inferred", env={"CLAUDECODE": "1"})
+        self.listen("both", env={"FILO_CLIENT": "agy", "CLAUDECODE": "1"})    # what is stated wins over what is guessed
+        self.listen("odd", env={"FILO_CLIENT": "not a name!"})    # a name that cannot be one is not used
+        rows = {row["name"]: row.get("client") for row in json.loads(self.msg("who", "--json").stdout)["participants"]}
+        self.assertEqual(rows, {"plain": None, "named": "opencode", "inferred": "claude", "both": "agy", "odd": None})
+
     def test_a_listener_of_the_installed_filo_is_listed_as_before(self) -> None:
         self.listen("boss")
         [row] = json.loads(self.msg("who", "--json").stdout)["participants"]
@@ -3049,9 +3061,8 @@ class EventLogTests(RuntimeCase):
         self.assertNotIn("message 00", " ".join(bodies))
 
 
-class UiTests(RuntimeCase):
-    """`filo ui`: a viewer in a browser. It only reads, it answers on this computer only, and only to whoever has
-    the token that it printed: a page on the web must not read a pool's messages through the browser."""
+class UiCase(RuntimeCase):
+    """A running `filo ui` and what is needed to ask it things."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -3095,6 +3106,10 @@ class UiTests(RuntimeCase):
         self.shown = json.loads(self.msg("who", "--json").stdout)["scope"]
         return self.shown
 
+class UiTests(UiCase):
+    """`filo ui`: a viewer in a browser. It only reads, it answers on this computer only, and only to whoever has
+    the token that it printed: a page on the web must not read a pool's messages through the browser."""
+
     def test_without_the_token_or_for_another_host_nothing_is_answered(self) -> None:
         self.assertEqual(self.get("/api/scopes", token=None)[0], 403)
         self.assertEqual(self.get("/api/scopes", token="wrong")[0], 403)
@@ -3120,7 +3135,8 @@ class UiTests(RuntimeCase):
         self.assertNotIn("outerHTML", text)
         self.assertNotIn("insertAdjacentHTML", text)
         self.assertNotIn("document.write", text)
-        self.assertNotRegex(text, r"https?://")    # nothing is fetched from anywhere else
+        # nothing is fetched from anywhere else (the SVG namespace is a name, not an address that anything opens)
+        self.assertNotRegex(text.replace("http://www.w3.org/2000/svg", ""), r"https?://")
 
     def test_the_scopes_the_roster_and_the_history_are_what_filo_knows(self) -> None:
         shown = self.join()
@@ -3164,3 +3180,104 @@ class UiTests(RuntimeCase):
         refused = self.msg("ui", "--port", "70000")
         self.assertEqual(refused.returncode, 1)
         self.assertIn("--port", refused.stderr)
+
+
+class UiRosterTests(unittest.TestCase):
+    """What the viewer says of a roster does not change every second: what waits is told to the minute."""
+
+    def test_how_long_a_message_has_waited_is_rounded_down_to_the_minute(self) -> None:
+        spec = importlib.util.spec_from_file_location("filo_ui_server_test", ROOT / "ui" / "server.py")
+        assert spec is not None and spec.loader is not None
+        server = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(server)
+
+        class Registration:
+            name, client, session = "worker2", "codex", "s1"
+
+        class Core:
+            @staticmethod
+            def participant_rows(_scope: str) -> list[object]:
+                return []
+
+            @staticmethod
+            def live_registrations(_scope: str) -> list[Registration]:
+                return [Registration()]
+
+            @staticmethod
+            def registration_waits(_rows: list[Registration]) -> dict[str, tuple[int, float]]:
+                return {"worker2": (9, 2879.9)}
+
+            @staticmethod
+            def registered_rows(rows: list[Registration], waits: dict[str, tuple[int, float]]) -> list[dict[str, object]]:
+                return [{"name": row.name, "client": row.client, "session": row.session, "waiting": waits[row.name][0],
+                         "oldest_seconds": int(waits[row.name][1])} for row in rows]
+
+            @staticmethod
+            def display_scope(scope: str) -> str:
+                return scope
+
+        roster = server.Viewer(Core(), "token").roster("/somewhere")
+        [row] = roster["registered"]
+        self.assertEqual((row["waiting"], row["oldest_seconds"]), (9, 2820))
+
+
+class UiOlderFiloTests(UiCase):
+    """A pool that runs a filo without the log still has what its listeners received and the acknowledgements of
+    what was handed to a client's queue: the viewer shows that, and follows it."""
+
+    def scope_directory(self) -> Path:
+        self.join()
+        return next(self.runtime.glob("*/boss.json")).parent
+
+    def old_message(self, directory: Path, identifier: str, sender: str, text: str, minutes_ago: int) -> None:
+        inbox = directory / "inbox" / "boss"
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / f"{identifier}.json").write_text(json.dumps({
+            "id": identifier, "from": sender, "to": "boss", "message": text,
+            "created_ns": 0, "received_ns": time.time_ns() - minutes_ago * 60 * 10**9}), encoding="utf-8")
+
+    def state(self) -> dict[str, Any]:
+        status, _, body = self.get("/api/state?scope=" + urllib.parse.quote(self.shown))
+        self.assertEqual(status, 200)
+        return dict(json.loads(body))
+
+    def test_what_a_listener_received_before_the_log_existed_is_shown(self) -> None:
+        directory = self.scope_directory()
+        self.old_message(directory, "18df0000000000aa-bbbbbb", "old", "from the past", 90)
+        messages = [event for event in self.state()["events"] if event["kind"] == "message"]
+        [old] = messages
+        self.assertEqual((old["from"], old["to"], old["state"], old["body"]), ("old", "boss", "delivered", "from the past"))
+
+    def test_what_was_queued_for_a_client_is_shown_without_its_text(self) -> None:
+        directory = self.scope_directory()
+        acks = directory / "acks"
+        acks.mkdir(exist_ok=True)
+        (acks / "18df0000000000cc-dddddd.json").write_text(json.dumps({
+            "id": "18df0000000000cc-dddddd", "to": "worker2", "how": "queued to codex thread 01aa",
+            "at_ns": time.time_ns() - 60 * 10**9}), encoding="utf-8")
+        [queued] = [event for event in self.state()["events"] if event["kind"] == "message"]
+        self.assertEqual((queued["to"], queued["state"], queued["body"]), ("worker2", "queued", None))
+        self.assertIsNone(queued["from"])
+
+    def test_a_message_that_is_in_the_log_and_in_an_inbox_is_shown_once(self) -> None:
+        self.join()
+        self.assertEqual(self.msg("send", "--to", "boss", "--from", "me", "--message", "twice kept").returncode, 0)
+        messages = [event for event in self.state()["events"] if event["kind"] == "message"]
+        [only] = messages
+        self.assertEqual((only["from"], only["body"]), ("me", "twice kept"))
+
+    def test_what_an_older_filo_writes_while_the_page_is_open_arrives_on_the_stream(self) -> None:
+        import http.client
+        directory = self.scope_directory()
+        since = int(self.state()["since_ns"])
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        connection.request("GET", f"/api/stream?scope={urllib.parse.quote(self.shown)}&offset=0&since={since}&token={self.token}",
+                           headers={"Host": f"127.0.0.1:{self.port}"})
+        response = connection.getresponse()
+        self.old_message(directory, "18df0000000000ee-ffffff", "elder", "written by an old filo", 0)
+        seen = ""
+        deadline = time.monotonic() + 8
+        while "written by an old filo" not in seen and time.monotonic() < deadline:
+            seen += response.fp.readline().decode("utf-8") if response.fp is not None else ""    # type: ignore[union-attr]
+        connection.close()
+        self.assertIn("written by an old filo", seen)

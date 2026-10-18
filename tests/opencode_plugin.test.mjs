@@ -20,7 +20,7 @@ if (command === "profile") {
   console.error("no such profile"); process.exit(1);
 }
 const name = rest[rest.indexOf("--as") + 1];
-appendFileSync(${JSON.stringify(pids)}, name + " " + process.pid + "\\n");
+appendFileSync(${JSON.stringify(pids)}, name + " " + process.pid + " " + (process.env.FILO_CLIENT ?? "") + "\\n");
 const line = (o) => console.log(JSON.stringify(o));
 const message = (o) => line({ kind: "message", to: name, ...o });
 const start = () => {
@@ -83,6 +83,7 @@ assert.match(await joinWith("none", "ghost worker"), /There is no profile "ghost
 
 const answer = await joinWith("s1", "manager chief");
 assert.match(answer, /Joined the pool as chief\. Connected: boss\./);
+assert.match(readFileSync(pids, "utf8"), /^chief \d+ opencode$/m, "the listener says which client it runs under");
 assert.match(answer, /Your profile is manager[\s\S]*Coordinates the others\./);
 assert.match(await joinWith("s1", ""), /already in the pool as chief/);
 
