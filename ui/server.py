@@ -25,7 +25,8 @@ HERE = Path(__file__).resolve().parent
 POLL = 0.4              # how often the log of a scope is looked at for new entries
 ROSTER_EVERY = 3.0      # how often the roster is looked at again, and the longest that it is not
 KEEPALIVE = 15.0        # a comment on a quiet stream, so that nothing in between closes it
-HISTORY = 300           # entries of the log that a page starts with
+HISTORY = 500           # entries that a page starts with
+LEGACY_EVERY = 1.0      # how often the inbox records and acknowledgements are looked at for new ones
 READ_LIMIT = 4_000_000  # the most that one look at the log reads
 
 
@@ -99,9 +100,69 @@ class Viewer:
                 entries.append(cast(dict[str, Any], entry))
         return entries, offset + complete
 
-    def history(self, scope: str) -> tuple[list[dict[str, Any]], int]:
+    def legacy_paths(self, scope: str) -> list[tuple[Path, str]]:
+        """What a filo without the log kept: what its listeners received (``inbox/NAME/ID.json``, for a day) and the
+        acknowledgements of what was handed to a client's queue (``acks/ID.json``, which hold no text)."""
+        directory = Path(self.core.scope_directory(scope))
+        found: list[tuple[Path, str]] = [(path, "inbox") for path in directory.glob("inbox/*/*.json")
+                                         if not path.name.startswith(".")]
+        found += [(path, "ack") for path in directory.glob("acks/*.json")]
+        return found
+
+    @staticmethod
+    def legacy_event(path: Path, kind: str) -> dict[str, Any] | None:
+        """One of those files as an entry of the log: a received message was delivered, and a queued one is shown
+        without its text and its sender, which were not kept."""
+        try:
+            record: Any = json.loads(path.read_text(encoding="utf-8"))
+            mtime = path.stat().st_mtime_ns
+        except (OSError, ValueError):
+            return None
+        if not isinstance(record, dict):
+            return None
+        data = cast(dict[str, Any], record)
+        if kind == "inbox":
+            return {"kind": "message", "id": data.get("id") or path.stem, "from": data.get("from"),
+                    "to": data.get("to") or path.parent.name, "state": "delivered", "body": data.get("message", ""),
+                    "t": int(data.get("received_ns") or mtime), "kept": "inbox"}
+        if not str(data.get("how", "")).startswith("queued to "):
+            return None    # delivered directly: the inbox of its listener has the message
+        return {"kind": "message", "id": data.get("id") or path.stem, "from": None, "to": data.get("to"),
+                "state": "queued", "body": None, "t": int(data.get("at_ns") or mtime), "kept": "ack"}
+
+    def new_legacy(self, scope: str, since_ns: int, seen: set[str]) -> list[dict[str, Any]]:
+        """The entries from those files that came after ``since_ns`` and that were not looked at before."""
+        fresh: list[dict[str, Any]] = []
+        for path, kind in self.legacy_paths(scope):
+            key = f"{kind}:{path.stem}"
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                if path.stat().st_mtime_ns < since_ns - 2_000_000_000:
+                    continue
+            except OSError:
+                continue
+            event = self.legacy_event(path, kind)
+            if event is not None:
+                fresh.append(event)
+        return sorted(fresh, key=lambda item: int(item.get("t", 0)))
+
+    def history(self, scope: str) -> tuple[list[dict[str, Any]], int, int]:
+        """The latest entries (the log's, and what older filo kept for a message that the log does not have), the
+        position in the log after them, and the time from which new things are looked for in the older files."""
+        since = time.time_ns() - 5 * 10**9
         entries, offset = self.read_since(scope, max(0, self._size(scope) - READ_LIMIT))
-        return entries[-HISTORY:], offset
+        known = {str(item.get("id")) for item in entries if item.get("kind") == "message"}
+        for path, kind in self.legacy_paths(scope):
+            if path.stem in known:
+                continue
+            event = self.legacy_event(path, kind)
+            if event is not None and str(event["id"]) not in known:
+                known.add(str(event["id"]))
+                entries.append(event)
+        entries.sort(key=lambda item: int(item.get("t", 0)))
+        return entries[-HISTORY:], offset, since
 
     def _size(self, scope: str) -> int:
         try:
@@ -167,10 +228,11 @@ def make_handler(viewer: Viewer) -> type[http.server.BaseHTTPRequestHandler]:
                 if scope is None:
                     self.reply(404, "text/plain; charset=utf-8", b"no such scope")
                 elif path == "/api/state":
-                    entries, offset = viewer.history(scope)
-                    self.json({**viewer.roster(scope), "events": entries, "offset": offset})
+                    entries, offset, since = viewer.history(scope)
+                    self.json({**viewer.roster(scope), "events": entries, "offset": offset, "since_ns": since})
                 else:
-                    self.stream(scope, int((query.get("offset") or ["0"])[0] or 0))
+                    self.stream(scope, int((query.get("offset") or ["0"])[0] or 0),
+                                int((query.get("since") or [str(time.time_ns())])[0] or 0))
             else:
                 self.reply(404, "text/plain; charset=utf-8", b"not found")
 
@@ -183,8 +245,9 @@ def make_handler(viewer: Viewer) -> type[http.server.BaseHTTPRequestHandler]:
                 "Content-Security-Policy": policy,
                 "Set-Cookie": f"filo_ui={viewer.token}; HttpOnly; SameSite=Strict; Path=/"})
 
-        def stream(self, scope: str, offset: int) -> None:
-            """Server-sent events: new entries of the log as they are written, and the roster when it changes."""
+        def stream(self, scope: str, offset: int, since: int) -> None:
+            """Server-sent events: new entries of the log as they are written, what older filo writes (from
+            ``since`` on), and the roster when it changes."""
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -193,7 +256,9 @@ def make_handler(viewer: Viewer) -> type[http.server.BaseHTTPRequestHandler]:
             self.close_connection = True
             last_roster = ""
             next_roster = 0.0
+            next_legacy = 0.0
             quiet_since = time.monotonic()
+            seen: set[str] = set()
 
             def send(event: str, data: Any) -> None:
                 self.wfile.write(f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode())
@@ -202,6 +267,9 @@ def make_handler(viewer: Viewer) -> type[http.server.BaseHTTPRequestHandler]:
             try:
                 while True:
                     entries, offset = viewer.read_since(scope, offset)
+                    if time.monotonic() >= next_legacy:
+                        entries += viewer.new_legacy(scope, since, seen)
+                        next_legacy = time.monotonic() + LEGACY_EVERY
                     if entries:
                         send("events", {"events": entries, "offset": offset})
                         quiet_since = time.monotonic()

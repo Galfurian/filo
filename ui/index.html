@@ -50,6 +50,7 @@ main { overflow: auto; padding: 18px 22px 40px; position: relative; }
 .badge { font-size: 11px; border-radius: 999px; padding: 0 8px; color: #fff; align-self: center; }
 .badge.delivered { background: var(--ok); } .badge.queued { background: var(--queued); }
 .badge.offline { background: var(--off); } .badge.unreachable, .badge.failed { background: var(--bad); }
+.dim { color: var(--muted); font-style: italic; }
 .note { text-align: center; color: var(--muted); font-size: 12px; margin: 14px 0; }
 #more { position: sticky; bottom: 10px; margin: 0 auto; display: none; width: max-content; background: var(--ink);
         color: var(--bg); border-radius: 999px; padding: 5px 14px; cursor: pointer; font-size: 13px; }
@@ -82,6 +83,7 @@ const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls)
 // name moves it a little; a listener has no client, so its name alone picks the colour.
 const COLORS = { claude: 215, codex: 155, agy: 32, opencode: 275 };
 const hue = (name, client) => { let h = 7; for (const c of name) h = (h * 33 + c.charCodeAt(0)) % 3600; return client in COLORS ? (COLORS[client] + (h % 30) - 15 + 360) % 360 : (h * 37) % 360; };
+const unknown = () => { const a = el("div", "avatar", "?"); a.style.background = "var(--muted)"; return a; };
 const avatar = (name, client, small) => { const a = el("div", "avatar" + (small ? " small" : ""), name.slice(0, 1).toUpperCase()); a.style.background = `hsl(${hue(name, client)} 55% 48%)`; return a; };
 const clock = (ns) => new Date(Number(ns) / 1e6).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
 const kinds = new Map();   // name -> client, as the roster says it
@@ -101,15 +103,21 @@ function showRoster(r) {
   }
 }
 
+const shown = new Map();   // id -> the row of a message that is on the page: one message is shown once
+
 function addEvent(e, feed) {
   if (e.kind === "presence") { feed.append(el("div", "note", `${clock(e.t)} · ${e.name} ${e.event}`)); return; }
   if (e.kind !== "message") return;
-  const row = el("div", "row"), bubble = el("div", "bubble"), head = el("div", "head");
-  head.append(el("b", "", e.from), el("span", "", "→ " + e.to), el("span", "", clock(e.t)), el("span", "badge " + e.state, e.state));
-  bubble.append(head, el("div", "text", e.body ?? ""));
+  const old = e.id ? shown.get(e.id) : undefined;
+  if (old && e.kept) return;                       // what an older filo kept says less than the log does
+  const sender = e.from ?? "someone", row = el("div", "row"), bubble = el("div", "bubble"), head = el("div", "head");
+  head.append(el("b", "", sender), el("span", "", "→ " + e.to), el("span", "", clock(e.t)), el("span", "badge " + e.state, e.state));
+  bubble.append(head, e.body === null || e.body === undefined ? el("div", "text dim", "its text was not kept") : el("div", "text", e.body));
   if (e.error) bubble.append(el("div", "sub warn", e.error));
   if (e.truncated) bubble.append(el("div", "sub", `cut: ${e.length} characters`));
-  row.append(avatar(e.from, kinds.get(e.from)), bubble); feed.append(row);
+  row.append(e.from ? avatar(sender, kinds.get(sender)) : unknown(), bubble);
+  if (old) old.replaceWith(row); else feed.append(row);
+  if (e.id) shown.set(e.id, row);
 }
 
 function append(events) {
@@ -121,11 +129,11 @@ function append(events) {
 async function open(scope) {
   current = scope; if (source) source.close();
   const state = await (await fetch("/api/state?scope=" + encodeURIComponent(scope))).json();
-  showRoster(state); $("feed").replaceChildren();
+  showRoster(state); $("feed").replaceChildren(); shown.clear();
   if (!state.events.length) $("feed").append(el("div", "empty", "Nothing has been said in this scope yet."));
   else append(state.events);
   $("main").scrollTop = $("main").scrollHeight;
-  source = new EventSource(`/api/stream?scope=${encodeURIComponent(scope)}&offset=${state.offset}`);
+  source = new EventSource(`/api/stream?scope=${encodeURIComponent(scope)}&offset=${state.offset}&since=${state.since_ns}`);
   source.onopen = () => $("live").classList.add("up"); source.onerror = () => $("live").classList.remove("up");
   source.addEventListener("roster", (m) => showRoster(JSON.parse(m.data)));
   source.addEventListener("events", (m) => { const empty = $("feed").querySelector(".empty"); if (empty) empty.remove(); append(JSON.parse(m.data).events); });

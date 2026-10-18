@@ -136,6 +136,11 @@ see [What it keeps](#what-it-keeps-and-forgets)), listens on `127.0.0.1` only, a
 the address and to that host name, and stops with Ctrl-C. `--port N` picks the port and `--open` opens the
 browser.
 
+A pool whose filo does not write the log yet (older than the one that added it) is shown too, from what
+those versions kept: what their listeners received in the last day, as delivered messages, and what was
+handed to the queue of Codex, agy or a Claude session, as queued messages with no sender and no text,
+which they did not keep. From the first message that a newer filo sends, the log has all of it.
+
 ### Names and scopes
 
 The scope is the current directory (or `--scope PATH_OR_KEYWORD`, to share one
