@@ -3070,9 +3070,11 @@ class EventLogTests(RuntimeCase):
 class UiCase(RuntimeCase):
     """A running `filo ui` and what is needed to ask it things."""
 
+    viewer_arguments: tuple[str, ...] = ()
+
     def setUp(self) -> None:
         super().setUp()
-        self.viewer = subprocess.Popen([sys.executable, str(SCRIPT), "ui", "--port", "0"], cwd=self.scope,
+        self.viewer = subprocess.Popen([sys.executable, str(SCRIPT), "ui", "--port", "0", *self.viewer_arguments], cwd=self.scope,
                                        env=self.environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.addCleanup(self.stop_viewer)
         assert self.viewer.stdout is not None
@@ -3112,6 +3114,28 @@ class UiCase(RuntimeCase):
         self.shown = json.loads(self.msg("who", "--json").stdout)["scope"]
         return self.shown
 
+class UiHostTests(UiCase):
+    """`filo ui --host`: another address than this computer's, when it is asked for."""
+
+    viewer_arguments = ("--host", "0.0.0.0")
+
+    def test_on_every_address_it_warns_and_answers_to_an_address_but_never_to_a_name(self) -> None:
+        assert self.viewer.stdout is not None
+        warning = self.viewer.stdout.readline()
+        self.assertIn("unencrypted", warning)
+        self.assertIn("every address", warning)
+        self.assertEqual(self.get("/api/scopes", host=f"192.168.1.20:{self.port}")[0], 200)
+        self.assertEqual(self.get("/api/scopes", host=f"[fe80::1]:{self.port}")[0], 200)
+        self.assertEqual(self.get("/api/scopes", host=f"evil.example:{self.port}")[0], 403)    # DNS rebinding
+        self.assertEqual(self.get("/api/scopes", host="192.168.1.20:1")[0], 403)
+        self.assertEqual(self.get("/api/scopes", token=None, host=f"192.168.1.20:{self.port}")[0], 403)    # the token
+
+    def test_by_default_it_listens_on_this_computer_only(self) -> None:
+        out = self.msg("ui", "--host", "example.org")
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("--host must be an IP address", out.stderr)
+
+
 class UiTests(UiCase):
     """`filo ui`: a viewer in a browser. It only reads, it answers on this computer only, and only to whoever has
     the token that it printed: a page on the web must not read a pool's messages through the browser."""
@@ -3121,6 +3145,7 @@ class UiTests(UiCase):
         self.assertEqual(self.get("/api/scopes", token="wrong")[0], 403)
         self.assertEqual(self.get("/api/scopes", host="evil.example")[0], 403)    # DNS rebinding
         self.assertEqual(self.get("/api/scopes", host=f"evil.example:{self.port}")[0], 403)
+        self.assertEqual(self.get("/api/scopes", host=f"192.168.1.20:{self.port}")[0], 403)    # not what it listens on
         self.assertEqual(self.get("/api/scopes")[0], 200)
 
     def test_the_page_comes_with_a_cookie_and_a_policy_that_lets_only_its_own_script_run(self) -> None:
