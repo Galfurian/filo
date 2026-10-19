@@ -17,6 +17,7 @@ import argparse
 import fcntl
 import hashlib
 import http.client
+import ipaddress
 import json
 import os
 import re
@@ -1865,12 +1866,16 @@ def ui_command(args: argparse.Namespace) -> int:
         raise UserError(f"ui: the viewer is not here ({server}): it comes with a release or a checkout of filo")
     if not 0 <= args.port <= 65535:
         raise UserError("ui: --port must be between 0 and 65535")
+    try:
+        ipaddress.ip_address(args.host)
+    except ValueError:
+        raise UserError(f"ui: --host must be an IP address ({args.host!r} is not one), for example 127.0.0.1 or 0.0.0.0") from None
     spec = importlib.util.spec_from_file_location("filo_ui_server", server)
     if spec is None or spec.loader is None:
         raise UserError(f"ui: cannot load {server}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return int(module.run(sys.modules[__name__], args.port, args.open))
+    return int(module.run(sys.modules[__name__], args.port, args.open, args.host))
 
 
 def upgrade_command(args: argparse.Namespace) -> int:
@@ -2024,7 +2029,9 @@ def command_parser() -> argparse.ArgumentParser:
     upgrade_parser.add_argument("--check", action="store_true", help="only say whether a newer release exists")
     upgrade_parser.add_argument("-y", "--yes", action="store_true", help="do not ask before upgrading")
 
-    ui_parser = sub.add_parser("ui", help="show the pool in a browser (read-only, on this computer, until Ctrl-C)")
+    ui_parser = sub.add_parser("ui", help="show the pool in a browser (read-only, on this computer unless --host says more, until Ctrl-C)")
+    ui_parser.add_argument("--host", default="127.0.0.1",
+                           help="the IP address to listen on (default: 127.0.0.1, this computer only; 0.0.0.0 is all)")
     ui_parser.add_argument("--port", type=int, default=0, help="the port to listen on (default: one that is free)")
     ui_parser.add_argument("--open", action="store_true", help="open the page in the default browser")
 

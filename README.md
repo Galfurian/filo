@@ -132,11 +132,14 @@ filo upgrade                                # install it, if this filo came from
 what they say to each other, as chat bubbles or as a plain log, live. It is one small page served by the
 standard library, with nothing to install and nothing fetched from the web. It only reads what filo
 keeps (the roster that `filo who` shows, with the same clean-up of what is gone, and the log of each scope,
-see [What it keeps](#what-it-keeps-and-forgets)), listens on `127.0.0.1` only, answers only to the token in
+see [What it keeps](#what-it-keeps-and-forgets)), listens on `127.0.0.1` unless `--host` says otherwise, answers only to the token in
 the address and to that host name, and stops with Ctrl-C. A box says which client its entity runs under (Claude,
 Codex, OpenCode, agy): for a registered session that is its client, and a listener says it from the variable that its
-client sets in the shell of a session (`FILO_CLIENT=name` states it, as the OpenCode plugin does). `--port N` picks the port and `--open` opens the
-browser.
+client sets in the shell of a session (`FILO_CLIENT=name` states it, as the OpenCode plugin does). `--port N` picks the port, `--open` opens the
+browser, and `--host IP` picks the address to listen on (`0.0.0.0` for all of them, to reach it from another
+computer): then what the viewer shows crosses the network unencrypted, to whoever has the address with its token, so
+use it on a network that you trust, or leave it on `127.0.0.1` and reach it through an SSH tunnel
+(`ssh -L 8765:127.0.0.1:8765 host`, with `--port 8765`). filo says so when it starts.
 
 Each entity has a box, and the boxes fill the page (they are laid out again when it is resized). When one entity writes to
 another an arrow is routed through the gaps between the boxes, from the sender to the recipient, and the message appears

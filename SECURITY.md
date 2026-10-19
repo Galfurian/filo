@@ -36,6 +36,10 @@ protect.
   `peer_pid` in a message event is the process that really sent it.
 - The log of a scope (`events.jsonl`, `0600`) holds the text of the messages sent in it for a day,
   as the inbox of a listener does for what it received. `FILO_NO_LOG=1` turns it off.
+- `filo ui` listens on `127.0.0.1` only, unless `--host` names another address. On one that other computers
+  reach, the viewer is served over plain HTTP: the token and the text of the messages cross the network
+  unencrypted, and anyone who has the address with its token can read them. It answers only to that address
+  (never to a name, against DNS rebinding) and prints a warning. Use an SSH tunnel instead when you can.
 - A client registered with `capture_env` leaves secrets in its registration file. For agy
   these are the address and token of its own sidecar, enough to send messages as that
   conversation; for Claude Code, the path and token of the session's inbox socket, enough to

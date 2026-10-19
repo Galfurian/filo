@@ -2,8 +2,9 @@
 
 Standard library only. It reads what filo keeps (the roster that `filo who` shows and the log of each scope) and
 shows it: it writes nothing and sends nothing. It runs in the foreground until Ctrl-C and listens on 127.0.0.1
-only; every request needs the token in the address that it prints, and a request that names another host is
-refused (a page on the web must not be able to read your agents' messages through your browser).
+unless it is given another address; every request needs the token in the address that it prints, and a request
+that names another host is refused (a page on the web must not be able to read your agents' messages through
+your browser).
 
 `run(core, ...)` takes the `filo` module itself, so that the viewer and the filo that started it agree.
 """
@@ -11,8 +12,10 @@ refused (a page on the web must not be able to read your agents' messages throug
 from __future__ import annotations
 
 import http.server
+import ipaddress
 import json
 import secrets
+import socket
 import threading
 import time
 import urllib.parse
@@ -33,12 +36,31 @@ READ_LIMIT = 4_000_000  # the most that one look at the log reads
 class Viewer:
     """What the pages ask for, from the filo that started this."""
 
-    def __init__(self, core: Any, token: str) -> None:
+    def __init__(self, core: Any, token: str, bind: str = "127.0.0.1") -> None:
         self.core = core
         self.token = token
+        self.bind = bind
         self.port = 0
         self._roster_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._lock = threading.Lock()
+
+    def answers_to(self, header: str) -> bool:
+        """Whether the Host of a request is one that this viewer is reached by. A name other than localhost is
+        what DNS rebinding needs, so only the address it listens on is accepted (any address, when it listens
+        on all of them), never a name."""
+        name, _, port = header.rpartition(":")
+        if port != str(self.port):
+            return False
+        name = name.strip("[]")
+        if name in ("127.0.0.1", "localhost", self.bind):
+            return True
+        if ipaddress.ip_address(self.bind).is_unspecified:
+            try:
+                ipaddress.ip_address(name)
+            except ValueError:
+                return False
+            return True
+        return False
 
     def scopes(self) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []
@@ -207,7 +229,7 @@ def make_handler(viewer: Viewer) -> type[http.server.BaseHTTPRequestHandler]:
         def allowed(self) -> tuple[bool, dict[str, list[str]]]:
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             host = self.headers.get("Host", "")
-            if host not in (f"127.0.0.1:{viewer.port}", f"localhost:{viewer.port}"):
+            if not viewer.answers_to(host):
                 self.reply(403, "text/plain; charset=utf-8", b"wrong host")
                 return False, query
             supplied = (query.get("token") or [""])[0]
@@ -314,14 +336,31 @@ def make_handler(viewer: Viewer) -> type[http.server.BaseHTTPRequestHandler]:
     return Handler
 
 
-def run(core: Any, port: int = 0, open_browser: bool = False) -> int:
-    viewer = Viewer(core, secrets.token_urlsafe(18))
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), make_handler(viewer))
-    server.daemon_threads = True
+class Server(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+
+
+class Server6(Server):
+    address_family = socket.AF_INET6
+
+
+def run(core: Any, port: int = 0, open_browser: bool = False, host: str = "127.0.0.1") -> int:
+    address = ipaddress.ip_address(host)
+    viewer = Viewer(core, secrets.token_urlsafe(18), host)
+    server = (Server6 if address.version == 6 else Server)((host, port), make_handler(viewer))
     viewer.port = int(server.server_address[1])
-    url = f"http://127.0.0.1:{viewer.port}/?token={viewer.token}"
+    shown = "127.0.0.1" if address.is_unspecified else f"[{host}]" if address.version == 6 else host
+    url = f"http://{shown}:{viewer.port}/?token={viewer.token}"
     print(f"filo ui: {url}", flush=True)
-    print("It only reads, and it listens on this computer only. Ctrl-C stops it.", flush=True)
+    if address.is_loopback:
+        print("It only reads, and it listens on this computer only. Ctrl-C stops it.", flush=True)
+    else:
+        where = "on every address of this computer" if address.is_unspecified else f"on {host}"
+        print(f"It only reads, and it listens {where}: what it shows is sent unencrypted, to anyone on that network who "
+              "has the address above. Use it on a network that you trust, or through an SSH tunnel. "
+              "Ctrl-C stops it.", flush=True)
+        if address.is_unspecified:
+            print("Replace 127.0.0.1 in the address with the one of this computer.", flush=True)
     if open_browser:
         webbrowser.open(url)
     try:
