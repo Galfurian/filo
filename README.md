@@ -401,12 +401,6 @@ address. `who` never deletes a listener it merely cannot probe: a sandboxed or s
 `FILO_NO_PRUNE=1` stops filo from looking at the process table at all, as in the Codex sandbox:
 registrations are then kept until `filo leave`.
 
-Each scope keeps one log, `events.jsonl` (mode `0600`), of what passes through filo in it: every message
-that is sent, with its sender, recipient, text, id and state (`delivered`, `queued`, `offline`,
-`unreachable` or `failed`), and who joins, registers and leaves. It holds
-the text of the messages (cut at 20,000 characters) for a day and at most `FILO_LOG_LIMIT` bytes
-(4,000,000 by default), and `FILO_NO_LOG=1` turns it off. Writing it never stops a send.
-
 A listener records which client it runs under (Claude, Codex, agy, OpenCode), from the variable that the client
 sets in the shell of its sessions; `FILO_CLIENT=name` states it, as the OpenCode plugin does.
 

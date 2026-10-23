@@ -34,8 +34,6 @@ protect.
 - Any process of yours can connect to a socket, send messages, claim any `--from` name and
   read the files under the runtime directory. `--from` is a label, not an identity;
   `peer_pid` in a message event is the process that really sent it.
-- The log of a scope (`events.jsonl`, `0600`) holds the text of the messages sent in it for a day,
-  as the inbox of a listener does for what it received. `FILO_NO_LOG=1` turns it off.
 - A client registered with `capture_env` leaves secrets in its registration file. For agy
   these are the address and token of its own sidecar, enough to send messages as that
   conversation; for Claude Code, the path and token of the session's inbox socket, enough to
