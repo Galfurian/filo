@@ -3006,3 +3006,40 @@ class ListenerVersionTests(RuntimeCase):
         self.assertIn("runs an older filo", self.msg("who").stdout)
         [row] = json.loads(self.msg("who", "--json").stdout)["participants"]
         self.assertIsNone(row["version"])
+
+
+class BootTests(RuntimeCase):
+    """`filo boot` says how the client that runs it connects."""
+
+    def boot(self, *args: str, **env: str) -> str:
+        clean = {"CLAUDECODE": "", "CODEX_THREAD_ID": "", "ANTIGRAVITY_CONVERSATION_ID": "",
+                 "FILO_CLIENT": "", "CLAUDE_CODE_MESSAGING_SOCKET": ""}
+        out = self.msg("boot", *args, env={**clean, **env})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout
+
+    def test_codex_registers_under_the_name_it_is_given(self) -> None:
+        text = self.boot("--name", "w2", CODEX_THREAD_ID="t-1")
+        self.assertIn("filo register --as codex --name w2", text)
+        self.assertNotIn("filo watch", text)
+
+    def test_claude_with_an_inbox_socket_registers(self) -> None:
+        text = self.boot(CLAUDECODE="1", CLAUDE_CODE_MESSAGING_SOCKET="/tmp/x")
+        self.assertIn("filo register --as claude", text)
+        self.assertIn("crossSessionInbound", text)
+
+    def test_claude_without_one_is_told_to_join_and_to_watch(self) -> None:
+        text = self.boot("--name", "boss", CLAUDECODE="1")
+        self.assertIn('filo join --as boss --detach --parent "$CLAUDE_PID" --json', text)
+        self.assertIn("filo watch --as <name> --preview 400", text)
+        self.assertIn("filo show ID", text)
+
+    def test_opencode_uses_its_tool_and_agy_registers_inside_its_session(self) -> None:
+        self.assertIn("filo_join", self.boot(FILO_CLIENT="opencode"))
+        self.assertIn("inside your session", self.boot(ANTIGRAVITY_CONVERSATION_ID="c-1"))
+
+    def test_a_client_that_cannot_be_told_can_be_named(self) -> None:
+        self.assertIn("filo register --as gemini", self.boot("--client", "gemini"))
+        self.assertIn("filo register --as <client>", self.boot())
+        bad = self.msg("boot", "--client", "not a name!")
+        self.assertNotEqual(bad.returncode, 0)

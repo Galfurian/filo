@@ -120,6 +120,7 @@ filo leave --name claude                    # a registered session or a listener
 
 filo profiles                               # the roles you can join as
 filo profile manager                        # print one
+filo boot                                   # how this client connects (what /filo runs first)
 
 filo upgrade --check                        # is there a newer release? (the only command that uses the network)
 filo upgrade                                # install it, if this filo came from get.sh
@@ -340,9 +341,9 @@ so that you can tell what is going on and what can go wrong.
 | agy | `filo register --as agy` (records `$ANTIGRAVITY_CONVERSATION_ID`) | a system message, through `agentapi send-message`; the chat is never locked and no second `agy` starts | an idle agy starts a turn on its own when one arrives; a busy one gets it when its current step ends, and it does not interrupt a running command; `register` must run inside agy |
 | Anything else | `filo register --as NAME` | whatever its adapter does, see [Adding another LLM](#adding-another-llm) | |
 
-The skill (`skills/filo/SKILL.md`) is the instruction sheet each agent reads.
-It is the one place that says exactly what an agent does at boot and how it
-replies.
+The skill (`skills/filo/SKILL.md`) is the instruction sheet each agent reads. It is short on
+purpose: what depends on the client (how it connects, how a message reaches it) is printed by
+`filo boot`, which picks the client from the environment, so the skill cannot fall behind the code.
 
 ## Compatibility
 
