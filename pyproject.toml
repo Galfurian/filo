@@ -1,6 +1,6 @@
 [project]
 name = "filo"
-version = "0.5.0"
+version = "0.6.0"
 description = "Direct local messaging between interactive LLM sessions"
 requires-python = ">=3.10"
 license = "MIT"
