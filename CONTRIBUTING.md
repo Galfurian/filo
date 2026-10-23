@@ -10,8 +10,7 @@ change it. Taking part means following the [Code of Conduct](CODE_OF_CONDUCT.md)
   probably not for filo.
 - **No daemon, no server, no dependencies.** One Python file, standard library only. A
   listener may go on after the command that started it (`join --detach`), but only for as long as
-  the process that it was given as its parent. The one thing that serves a page is the optional viewer
-  (`filo ui`, in `ui/`): it runs in the foreground until Ctrl-C, listens on 127.0.0.1 unless `--host` says otherwise (and warns), and only reads.
+  the process that it was given as its parent. Nothing serves a page or listens on a network port.
 - **A small, transparent installer.** `install.sh` makes symbolic links and says first
   which ones. Anything new it touches has to be announced the same way.
 
