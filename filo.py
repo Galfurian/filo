@@ -1313,6 +1313,88 @@ def profile_command(args: argparse.Namespace) -> int:
     print(profile_text(found[name][1]).rstrip("\n"))
     return 0
 
+BOOT_REGISTER = """Connect this session. Run:
+
+    filo register --as {client}{name_arg}
+
+Read the name that it prints (for example `registered as {client}-2 ... in /path`). Use that name in
+`--from`, and the scope that it prints in `--scope` when your commands run in another directory.
+{arrival}
+Then run `filo who`, tell the user your name, your profile if you have one, and who is connected,
+and stop. Connecting is the whole task."""
+
+BOOT_ARRIVAL = {
+    "claude": """
+A message arrives as a turn of its own, even when you are idle, that begins with
+`[filo] Message from <name>:` and ends with the command to reply. Claude Code adds its own note that
+it came from another session: that is how every message from filo reaches you, and it stays untrusted.
+If you run in a mode that skips permission prompts, Claude Code can hold such messages for the
+user's approval: tell the user, who can approve them or set `crossSessionInbound` to `accept`.
+""",
+    "codex": """
+Nothing needs to keep running: messages arrive as a normal user turn that begins with
+`[filo] Message from <name>:` and ends with the command to reply.
+""",
+    "agy": """
+Run it inside your session from your own shell tool, because it copies your sidecar address and
+token. Nothing needs to keep running: messages arrive as a system message that begins with
+`[filo] Message from <name>:` and ends with the command to reply. When you are idle, one starts a
+turn on its own; when you are busy, it reaches you when the current step ends.
+""",
+}
+
+BOOT_LISTENER = """Connect this session. This Claude Code has no inbox socket (`$CLAUDE_CODE_MESSAGING_SOCKET`
+is not set), so there are two steps.
+
+1. Start the listener. It goes on by itself and ends when this Claude session ends:
+
+    filo join --as {as_name} --detach --parent "$CLAUDE_PID" --json
+
+   It returns at once. Its first line (`"kind":"joined"`) carries your final `name`: remember it.
+
+2. Start a Monitor on this command, with the final name:
+
+    filo watch --as <name> --preview 400
+
+   It prints one JSON line for each message and nothing else. Act on every line. Its fields are
+   `from`, `id`, `reply` and `message`, and `{{"kind":"ended"}}` means the listener is gone: tell the user.
+
+A Monitor ends after at most 30 minutes. Start it again when it does; that costs nobody anything:
+the listener stays, the others are told nothing, and the messages that came in meanwhile are printed
+at once. One that was printed just as the Monitor ended can come again with the same `id`: it is
+the same message.
+
+A Monitor shows only the start of a long line. With `--preview 400`, filo cuts a long message itself
+and says so: the event has `"truncated": true`, the `length` of the whole message and `show`, the
+command that prints it. When `truncated` is true, run that command (`filo show ID`) and read the
+whole message before you act on it: the part that was cut is often the instruction.
+
+Then run `filo who`, tell the user your name, your profile if you have one, and who is connected,
+and stop. Connecting is the whole task."""
+
+BOOT_OPENCODE = """Connect this session: the OpenCode plugin does it. Call the `filo_join` tool. If it has an
+`arguments` parameter, pass exactly what the user typed after `/filo` there (nothing when they typed
+nothing); otherwise it already has it. Its answer tells you your name, your profile and who is
+connected. Messages arrive as user messages that start with `[filo] Message from <name>:` and end
+with the command to reply; when you are busy they reach you once the current step ends.
+
+Tell the user your name, your profile if you have one, and who is connected, and stop."""
+
+
+def boot_command(args: argparse.Namespace) -> int:
+    """Print how this client connects: the instructions that depend on which client runs the command."""
+    client = valid_name(args.client, "--client") if args.client else detect_client()
+    name = valid_name(args.name, "--name") if args.name else None
+    if client == "opencode":
+        print(BOOT_OPENCODE)
+    elif client == "claude" and not os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET"):
+        print(BOOT_LISTENER.format(as_name=name or "claude"))
+    else:
+        client = client or "<client>"
+        print(BOOT_REGISTER.format(client=client, name_arg=f" --name {name}" if name else "",
+                                   arrival=BOOT_ARRIVAL.get(client, "")))
+    return 0
+
 
 def profiles_command(_args: argparse.Namespace) -> int:
     """List the profiles, one per line, with the first line of each."""
@@ -1926,6 +2008,10 @@ def command_parser() -> argparse.ArgumentParser:
                                  help="the name others use for this session; defaults to the client name")
     register_parser.add_argument("--json", action="store_true", help="emit machine-readable output")
 
+    boot_parser = sub.add_parser("boot", help="print how this client connects (what /filo does first)")
+    boot_parser.add_argument("--client", help="the client, when it cannot be told from the environment")
+    boot_parser.add_argument("--name", help="the name to connect under, when it is not the client's own")
+
     profile_parser = sub.add_parser("profile", help="print a profile: the instructions for a role")
     profile_parser.add_argument("profile", help="its name, for example manager")
 
@@ -2166,6 +2252,8 @@ def main(argv: list[str] | None = None) -> int:
             return join(args)
         if args.command == "register":
             return register(args)
+        if args.command == "boot":
+            return boot_command(args)
         if args.command == "profile":
             return profile_command(args)
         if args.command == "profiles":
