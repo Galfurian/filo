@@ -1313,9 +1313,10 @@ def register(args: argparse.Namespace) -> int:
     remember_scope(scope)
     record_event(scope, {"kind": "presence", "event": "registered", "name": name, "client": client})
     if args.json:
-        print(json.dumps({"kind": "registered", "name": name, "client": client, "session": session}), flush=True)
+        print(json.dumps({"kind": "registered", "name": name, "client": client, "session": session,
+                          "scope": display_scope(scope)}), flush=True)
     else:
-        print(f"registered as {name} for {client} session {session}"
+        print(f"registered as {name} for {client} session {session} in {display_scope(scope)}"
               + (f"; use --from {name} when you send" if name != client else ""))
     return 0
 
@@ -1492,8 +1493,9 @@ def deliver_offline(scope: str, recipient: str, sender: str, body: str, message_
     if recipient in adapters():
         raise UserError(f"unreachable: {recipient!r} has not registered here, and filo does not guess which "
                         f"{recipient} session you mean: run /filo in it, then 'filo who' to see its name")
-    raise UserError(f"unreachable: recipient {recipient!r} is not connected and has not been seen here; "
-                     f"run 'filo who' to see who is")
+    raise UserError(f"unreachable: recipient {recipient!r} is not connected and has not been seen in "
+                     f"{display_scope(scope)}; run 'filo who' to see who is here, 'filo who --all' for every scope, "
+                     f"and add --scope if it is in another")
 
 
 def deliver_message(scope: str, recipient: str, sender: str, body: str, message_id: str) -> str:
@@ -1507,7 +1509,8 @@ def deliver_message(scope: str, recipient: str, sender: str, body: str, message_
         # Sandboxed sender: it cannot connect, but a listener exists (its
         # metadata is there), so leave the message for it to pick up.
         if not metadata_path(scope, recipient).exists():
-            raise UserError(f"unreachable: recipient {recipient!r} is not connected: {exc}") from exc
+            raise UserError(f"unreachable: recipient {recipient!r} is not connected in "
+                            f"{display_scope(scope)}: {exc}") from exc
         spool_message(scope, recipient, sender, body, message_id)
         return (f"queued for {recipient} ({message_id}): left for its listener, which takes it from the spool; "
                 f"this sandbox cannot confirm that. {AGAIN}.")

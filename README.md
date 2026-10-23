@@ -127,8 +127,10 @@ filo upgrade                                # install it, if this filo came from
 
 ### Names and scopes
 
-The scope is the current directory (or `--scope PATH_OR_KEYWORD`, to share one
-across directories). Sessions in different directories never see each other.
+The scope is the directory where a session joined or registered (or `--scope PATH_OR_KEYWORD`, to
+share one across directories); `register` prints it. A session that works in another directory,
+such as a git worktree, stays in that scope (see below), and a directory that nobody joined from is
+a scope of its own, with nobody in it. Sessions in different directories never see each other.
 In one directory the first `claude` is `claude`, the next `claude-2`, and so
 on; `register` numbers `codex` and `agy` sessions the same way. `join --exact`
 fails instead of adding a suffix. `register --name NAME` picks the name, and a
@@ -234,9 +236,10 @@ travel with the skill link, so they need no install of their own.
 
 ## Troubleshooting
 
-- **`unreachable: recipient 'X' is not connected and has not been seen here`**: X never joined in this
-  directory, or ran `filo leave`. `filo who` shows who is here; sessions in other
-  directories never see each other.
+- **`unreachable: recipient 'X' is not connected and has not been seen in SCOPE`**: X never joined in
+  that scope, or ran `filo leave`. `filo who` shows who is in it, `filo who --all` who is in every
+  scope. If X is in another scope, repeat the command with `--scope`: sessions in different scopes
+  never see each other.
 - **`offline: X … is not connected`**: X is a listener that is away. The message waits for an hour
   and arrives when it rejoins.
 - **`queued for … : handed to its client`, and `N earlier messages are still waiting there`**: the
