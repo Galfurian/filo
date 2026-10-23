@@ -32,6 +32,23 @@ SCRIPT = ROOT / "filo.py"
 RELEASE_MARKER = ".filo-release"
 
 
+
+def named_process(program: Path, cwd: Path) -> subprocess.Popen[bytes]:
+    """Run, for two minutes, a process that the system calls ``program.name`` and that works in ``cwd``.
+
+    On Linux the process names itself, since a copy of ``sleep`` does not run under another name where
+    ``sleep`` is one applet of a single binary, as on Ubuntu 26.04. Elsewhere a copy of a plain binary
+    does, whereas a link to Python would be started again under another name on macOS."""
+    if sys.platform.startswith("linux"):
+        code = "import ctypes, sys, time; ctypes.CDLL(None).prctl(15, sys.argv[1].encode(), 0, 0, 0); time.sleep(120)"
+        return subprocess.Popen([sys.executable, "-c", code, program.name], cwd=cwd)
+    if not program.exists():
+        sleep = shutil.which("sleep")
+        assert sleep is not None
+        shutil.copy(sleep, program)
+    return subprocess.Popen([str(program), "120"], cwd=cwd)
+
+
 class MessagePassingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.runtime = tempfile.TemporaryDirectory()
@@ -200,15 +217,9 @@ class CodexQueueRouteTests(unittest.TestCase):
 
     def start_codex(self, count: int = 1, cwd: Path | None = None) -> None:
         """Run ``count`` processes that look like Codex sessions in the scope."""
-        # A copy of a plain binary, so that the process is called "codex" on every system;
-        # a link to Python would be started again under another name on macOS.
         program = self.live_dir / "codex"
-        if not program.exists():
-            sleep = shutil.which("sleep")
-            assert sleep is not None
-            shutil.copy(sleep, program)
         for _ in range(count):
-            self.live.append(subprocess.Popen([str(program), "120"], cwd=cwd or self.scope))
+            self.live.append(named_process(program, cwd or self.scope))
         time.sleep(0.2)
 
     def send(self, *args: str) -> subprocess.CompletedProcess[str]:
@@ -2666,11 +2677,7 @@ class ErrorTests(RuntimeCase):
         if not Path("/proc").is_dir():
             self.skipTest("the 15 characters are the kernel's limit in /proc; lsof is used elsewhere")
         name = "my-long-agent-binary"    # more than the 15 characters that the kernel keeps
-        program = self.root / name
-        sleep = shutil.which("sleep")
-        assert sleep is not None
-        shutil.copy(sleep, program)
-        client = subprocess.Popen([str(program), "120"], cwd=self.scope)
+        client = named_process(self.root / name, self.scope)
         self.addCleanup(client.wait)
         self.addCleanup(client.terminate)
         time.sleep(0.2)
