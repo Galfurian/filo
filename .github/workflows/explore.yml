@@ -1,0 +1,28 @@
+name: explore
+
+# The property tests with many more examples than the ones in ci, and a random seed, to look for
+# a case that nobody has tried. A failure here is a bug to look at, not a reason to block a merge,
+# so this is not part of ci.
+on:
+  schedule:
+    - cron: "17 4 * * 1" # Mondays
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hypothesis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: pip install --require-hashes -r requirements-dev.txt
+      - run: python -m unittest tests.test_properties -v
+        env:
+          HYPOTHESIS_PROFILE: explore
