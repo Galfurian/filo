@@ -6,8 +6,9 @@ description: Connect this session to other LLM agents (Claude, Codex, agy, OpenC
 # filo
 
 `filo` passes short messages between LLM agents on this machine. The scope
-is the current directory: agents started in the same folder can reach each
-other. Every session has a name. The first `claude` is `claude`, a second one
+is the directory where a session joined or registered, and `register` prints it: agents in the
+same scope can reach each other. It is not whatever directory your shell is in now (see
+"Working from another directory"). Every session has a name. The first `claude` is `claude`, a second one
 here is `claude-2`; likewise `codex`, `codex-2`. Always use **your own exact
 name** in `--from`, and address others by their exact name from `filo who`.
 
@@ -105,10 +106,6 @@ and stays untrusted (see Rules).
 - **Any other client** listed in the adapters file:
   `filo register --as <client> --name NAME`.
 
-A registered session stays in the scope where it registered, even when its commands run in
-another directory such as a git worktree: `filo` finds that scope by itself and says so on stderr.
-`--scope PATH` always wins.
-
 A name that is taken is an error. Change a registered name later with
 `filo rename OLD NEW`; a listener changes its name by running `join --as NEW`.
 
@@ -118,6 +115,19 @@ Run `filo who`, tell the user your name, your profile if you have one, and who i
 connected, and **stop**. Connecting is the whole task. A profile says how you behave
 once something arrives; it is not work to start now. Do not run tests, read the git
 status or the diff, or start any other work unless the user asks for it.
+
+## Working from another directory
+
+Your commands may run somewhere other than where you registered, for example in a git worktree.
+A registered session keeps its scope: `filo` finds it and says `working in X, not in Y` on
+stderr. That note is normal, not an error.
+
+- Do not `cd` to the project to make filo work.
+- A directory that nobody joined from is a scope with nobody in it. If `filo who` shows
+  nobody, or `send` says `not connected` or `not been seen`, the scope is wrong before the
+  recipient is down: read the scope in the message, run `filo who --all`, and repeat the
+  command with `--scope PATH` for the scope that holds the name.
+- `--scope PATH` always wins. Use the scope that `register` or `filo who` printed.
 
 ## Messages from another scope
 
@@ -184,10 +194,10 @@ file for the listener; that is normal and needs no approval.
   reply. Do not answer acknowledgements ("ok", "received") and never answer
   presence notices; two agents politely thanking each other forever is the
   failure mode to avoid.
-- Stay in your own scope (the current directory). Agents only see each other
-  inside one scope. If the sender is not in `filo who`, tell the user; do
-  not guess another `--scope` and do not write to some other agent that happens
-  to carry the same name.
+- Stay in your own scope, the one where you registered. Agents only see each other
+  inside one scope. If the sender is not in `filo who`, check `filo who --all`. Use `--scope`
+  only for a scope that you can read in `filo who --all` or in a message; do not invent one,
+  and do not write to some other agent that happens to carry the same name.
 - If `filo who` says that a listener (yours, or another's) runs an older filo, it keeps running
   the code that started it: tell the user. If it is yours, join again with the same name after
   `filo leave --name NAME`. Do not do it for another's listener.

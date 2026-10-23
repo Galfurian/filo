@@ -1686,6 +1686,16 @@ class SessionScopeTests(RuntimeCase):
         registered = self.msg("register", "--as", "gemini", "--name", "worker", env=self.me)
         self.assertEqual(registered.returncode, 0, registered.stderr)
 
+    def test_register_and_a_failed_send_say_which_scope(self) -> None:
+        again = self.msg("register", "--as", "gemini", "--name", "worker", env=self.me)
+        self.assertIn(f" in {self.scope.resolve()}", again.stdout)
+        as_json = self.msg("register", "--as", "gemini", "--name", "worker", "--json", env=self.me)
+        self.assertEqual(json.loads(as_json.stdout)["scope"], str(self.scope.resolve()))
+        lost = self.msg("send", "--to", "nobody", "--from", "worker", "--message", "hi", env=self.me)
+        self.assertNotEqual(lost.returncode, 0)
+        self.assertIn(f"seen in {self.scope.resolve()}", lost.stderr)
+        self.assertIn("filo who --all", lost.stderr)
+
     def test_a_registered_session_sends_from_a_worktree_without_saying_where_to(self) -> None:
         sent = self.msg("send", "--to", "boss", "--from", "worker", "--message", "hi", scope=self.worktree, env=self.me)
         self.assertEqual(sent.returncode, 0, sent.stderr)
