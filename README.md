@@ -121,37 +121,9 @@ filo leave --name claude                    # a registered session or a listener
 filo profiles                               # the roles you can join as
 filo profile manager                        # print one
 
-filo ui                                     # the pool in a browser: who is there and what they say (read-only)
 filo upgrade --check                        # is there a newer release? (the only command that uses the network)
 filo upgrade                                # install it, if this filo came from get.sh
 ```
-
-### Watching a pool
-
-`filo ui` prints an address (`http://127.0.0.1:PORT/?token=…`): open it and you see who is in a scope and
-what they say to each other, as chat bubbles or as a plain log, live. It is one small page served by the
-standard library, with nothing to install and nothing fetched from the web. It only reads what filo
-keeps (the roster that `filo who` shows, with the same clean-up of what is gone, and the log of each scope,
-see [What it keeps](#what-it-keeps-and-forgets)), listens on `127.0.0.1` unless `--host` says otherwise, answers only to the token in
-the address and to that host name, and stops with Ctrl-C. A box says which client its entity runs under (Claude,
-Codex, OpenCode, agy): for a registered session that is its client, and a listener says it from the variable that its
-client sets in the shell of a session (`FILO_CLIENT=name` states it, as the OpenCode plugin does). `--port N` picks the port, `--open` opens the
-browser, and `--host IP` picks the address to listen on (`0.0.0.0` for all of them, to reach it from another
-computer): then what the viewer shows crosses the network unencrypted, to whoever has the address with its token, so
-use it on a network that you trust, or leave it on `127.0.0.1` and reach it through an SSH tunnel
-(`ssh -L 8765:127.0.0.1:8765 host`, with `--port 8765`). filo says so when it starts.
-
-Each entity has a box, and the boxes fill the page (they are laid out again when it is resized). When one entity writes to
-another an arrow is routed through the gaps between the boxes, from the sender to the recipient, and the message appears
-there. A box scrolls through everything the page has of its history and follows what comes while it is at the bottom,
-`⤢` (or a double click on the title) opens a sheet with the whole conversation of that entity, in both directions, which
-can be filtered by who it talks with and searched, and a Codex session whose client holds messages for it says how many
-and for how long. Light or dark follows the browser.
-
-A pool whose filo does not write the log yet (older than the one that added it) is shown too, from what
-those versions kept: what their listeners received in the last day, as delivered messages, and what was
-handed to the queue of Codex, agy or a Claude session, as queued messages with no sender and no text,
-which they did not keep. From the first message that a newer filo sends, the log has all of it.
 
 ### Names and scopes
 
@@ -272,7 +244,7 @@ travel with the skill link, so they need no install of their own.
   free. A session that never stops, one very long turn after another, never takes them. `filo who`
   shows how many wait for a registered session and for how long (for Codex it is read from Codex's
   own queue, a file that can change; for the others filo cannot say). When the oldest has waited
-  more than 30 minutes, `send` says the session is likely stuck and the viewer shows the badge in red.
+  more than 30 minutes, `send` says the session is likely stuck.
   Interrupt that session so that it takes them, and send one message that sums up what is still true.
 - **`runs filo 0.4.3, this is 0.4.6`** in `filo who`: a listener goes on running the filo that
   started it, whatever is installed since, so it lacks what came later. Its session joins again
@@ -428,9 +400,12 @@ registrations are then kept until `filo leave`.
 
 Each scope keeps one log, `events.jsonl` (mode `0600`), of what passes through filo in it: every message
 that is sent, with its sender, recipient, text, id and state (`delivered`, `queued`, `offline`,
-`unreachable` or `failed`), and who joins, registers and leaves. It is what a viewer follows, it holds
+`unreachable` or `failed`), and who joins, registers and leaves. It holds
 the text of the messages (cut at 20,000 characters) for a day and at most `FILO_LOG_LIMIT` bytes
 (4,000,000 by default), and `FILO_NO_LOG=1` turns it off. Writing it never stops a send.
+
+A listener records which client it runs under (Claude, Codex, agy, OpenCode), from the variable that the client
+sets in the shell of its sessions; `FILO_CLIENT=name` states it, as the OpenCode plugin does.
 
 A listener holds the lock file `NAME.lock` of its name for as long as it lives, and a name is free
 when nothing holds it. What a listener received (`filo show`) and the acknowledgements that
