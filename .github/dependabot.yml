@@ -8,3 +8,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      # init and analyze must be the same version, so they cannot be bumped one at a time.
+      codeql-action:
+        patterns:
+          - "github/codeql-action/*"
