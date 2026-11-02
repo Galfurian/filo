@@ -302,10 +302,22 @@ Leaving is not the same for everyone. A listener that stops is only away: messag
 for it wait in the spool and arrive if it rejoins. A registered session that runs
 `filo leave` is gone: its name is forgotten and messages for it are refused.
 
-Sandboxed senders (the Codex sandbox cannot connect to Unix sockets, but can
-write files) leave the message in the spool automatically, and the listener
-delivers it within half a second. Every message has an id; `status` reports
-whether it was delivered.
+Every message has an id; `status` reports whether it was delivered.
+
+**In the Codex sandbox.** The sandbox of Codex refuses every `connect()` to a Unix socket, whatever
+the path and whatever the config (`network_access` does not change it); only full access allows it.
+filo works around it where it can: a sandboxed sender leaves the message in the spool of a **listener**,
+which delivers it within half a second. A **registered** session (Claude with an inbox socket, Codex,
+agy) has no listener and no spool: it is reached through a socket, so `filo send` from inside the
+sandbox fails with `this sandbox cannot connect to sockets`. Run it outside the sandbox, without full
+access for everything, with a rule that Codex reads at startup, in `~/.codex/rules/default.rules`:
+
+```
+prefix_rule(pattern=["filo", "send"], decision="allow", justification="filo send needs a Unix socket, which the sandbox blocks")
+```
+
+`allow` runs that command outside the sandbox without asking; `filo send` is the only one that needs it.
+Start the Codex session again after adding it.
 
 **A listener that outlives its Monitor.** A Claude Monitor ends after at most 30 minutes. If the
 listener were the Monitor, each end would tell every other session that it left, and each
