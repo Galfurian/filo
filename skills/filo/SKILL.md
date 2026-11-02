@@ -103,5 +103,7 @@ listener or for a registered name that is not yours, and stop its Monitor). Open
   is yours, join again with the same name after `filo leave --name NAME`; not for another's.
 - If `filo who` says a newer version of filo is available, tell the user and leave it there.
   `filo upgrade` runs a script downloaded from the network: the user runs it, you do not.
-- Inside the Codex sandbox sockets are blocked, so `send` leaves the message as a file for the
-  listener; that is normal and needs no approval.
+- Inside the Codex sandbox sockets are blocked. To a listener `send` leaves a file, which is normal
+  and needs no approval. A registered session has no listener: if `send` says `this sandbox cannot
+  connect to sockets`, the recipient is not down. Ask the user to allow `filo send` outside the
+  sandbox (`filo boot` shows the rule), and do not retry in the sandbox.

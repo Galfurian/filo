@@ -1334,6 +1334,13 @@ user's approval: tell the user, who can approve them or set `crossSessionInbound
     "codex": """
 Nothing needs to keep running: messages arrive as a normal user turn that begins with
 `[filo] Message from <name>:` and ends with the command to reply.
+
+Inside the Codex sandbox `filo send` cannot reach a registered session (it needs a socket, and the
+sandbox refuses every one): it fails with `this sandbox cannot connect to sockets`. Do not retry it.
+Tell the user to add this line to `~/.codex/rules/default.rules` and to start Codex again, which runs
+`filo send` outside the sandbox:
+
+    prefix_rule(pattern=["filo", "send"], decision="allow", justification="filo send needs a Unix socket, which the sandbox blocks")
 """,
     "agy": """
 Run it inside your session from your own shell tool, because it copies your sidecar address and
@@ -1527,8 +1534,12 @@ def deliver_message(scope: str, recipient: str, sender: str, body: str, message_
         # Sandboxed sender: it cannot connect, but a listener exists (its
         # metadata is there), so leave the message for it to pick up.
         if not metadata_path(scope, recipient).exists():
-            raise UserError(f"unreachable: recipient {recipient!r} is not connected in "
-                            f"{display_scope(scope)}: {exc}") from exc
+            if any(row.name == recipient for row in read_registrations(scope)):
+                raise UserError(f"unreachable: this sandbox cannot connect to sockets, and {recipient!r} is a registered "
+                                f"session, which is reached through one and has no spool to leave a file in: run "
+                                f"'filo send' outside the sandbox (README, 'In the Codex sandbox'): {exc}") from exc
+            raise UserError(f"unreachable: recipient {recipient!r} is not connected in {display_scope(scope)}, "
+                            f"or this sandbox cannot connect to sockets and filo cannot tell which: {exc}") from exc
         spool_message(scope, recipient, sender, body, message_id)
         return (f"queued for {recipient} ({message_id}): left for its listener, which takes it from the spool; "
                 f"this sandbox cannot confirm that. {AGAIN}.")
