@@ -23,6 +23,7 @@ import re
 import secrets
 import select
 import shlex
+import shutil
 import signal
 import socket
 import sqlite3
@@ -1249,12 +1250,19 @@ def register(args: argparse.Namespace) -> int:
         name = claim_free_name(scope, client, registration)
     mark_known(scope, name, "registered")
     remember_scope(scope)
+    warning = None
+    if client == "codex" and os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED") and not codex_rule_present():
+        warning = ("this Codex runs in a sandbox that refuses every socket, so `filo send` will not reach a session "
+                   "that is registered (Claude, Codex, agy) until the user runs `filo setup codex` and starts "
+                   "Codex again. Tell the user; do not run it yourself.")
     if args.json:
         print(json.dumps({"kind": "registered", "name": name, "client": client, "session": session,
-                          "scope": display_scope(scope)}), flush=True)
+                          "scope": display_scope(scope), **({"warning": warning} if warning else {})}), flush=True)
     else:
         print(f"registered as {name} for {client} session {session} in {display_scope(scope)}"
               + (f"; use --from {name} when you send" if name != client else ""))
+        if warning:
+            print(f"warning: {warning}")
     return 0
 
 
@@ -1337,8 +1345,9 @@ Nothing needs to keep running: messages arrive as a normal user turn that begins
 
 Inside the Codex sandbox `filo send` cannot reach a registered session (it needs a socket, and the
 sandbox refuses every one): it fails with `this sandbox cannot connect to sockets`. Do not retry it.
-Tell the user to add this line to `~/.codex/rules/default.rules` and to start Codex again, which runs
-`filo send` outside the sandbox:
+Tell the user to run `filo setup codex` (it shows what it changes and asks first) and to start Codex
+again. It adds this line to `~/.codex/rules/default.rules`, which runs `filo send` outside the sandbox.
+Do not run it yourself: it changes the configuration of Codex.
 
     prefix_rule(pattern=["filo", "send"], decision="allow", justification="filo send needs a Unix socket, which the sandbox blocks")
 """,
@@ -1886,6 +1895,65 @@ def install_directory() -> Path:
         script = Path(os.path.abspath(script.parent / os.readlink(script)))
     return script.parent
 
+CODEX_RULE = ('prefix_rule(pattern=["filo", "send"], decision="allow", '
+              'justification="filo send needs a Unix socket, which the sandbox blocks")')
+CODEX_RULE_PATTERN = re.compile(r'pattern\s*=\s*\[\s*"filo"\s*,\s*"send"\s*\]')
+CODEX_RULE_DECISION = re.compile(r'decision\s*=\s*"allow"')
+
+
+def codex_rules_directory() -> Path:
+    """Where Codex reads the rules that say which commands run outside its sandbox."""
+    return Path(os.environ.get("CODEX_HOME") or "~/.codex").expanduser() / "rules"
+
+
+def codex_rule_present() -> bool:
+    """Whether a rule that lets ``filo send`` run outside the sandbox of Codex is there. Best effort: it reads the
+    ``*.rules`` files, and a rule that Codex gets from somewhere else is not seen."""
+    try:
+        files = sorted(codex_rules_directory().glob("*.rules"))
+    except OSError:
+        return False
+    for path in files:
+        try:
+            text = re.sub(r"(?m)#.*$", "", path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+        for statement in text.split("prefix_rule(")[1:]:
+            if CODEX_RULE_PATTERN.search(statement) and CODEX_RULE_DECISION.search(statement):
+                return True
+    return False
+
+
+def setup_command(args: argparse.Namespace) -> int:
+    """Add to the rules of Codex the one that lets ``filo send`` out of the sandbox. It asks first."""
+    target = codex_rules_directory() / "default.rules"
+    if codex_rule_present():
+        print(f"setup: a rule for 'filo send' is already in {codex_rules_directory()}; nothing to do.")
+        return 0
+    print(f"This adds one line to {target}:\n\n    {CODEX_RULE}\n\n"
+          "Codex then runs `filo send`, and only that command, outside its sandbox without asking: the sandbox "
+          "refuses every Unix socket, and `filo send` needs one to reach a session that is registered. "
+          "Nothing else changes, and the file is copied to default.rules.bak first. Codex reads its rules "
+          "when it starts, so start it again afterwards.")
+    if args.dry_run:
+        print("\nDry run: nothing was changed.")
+        return 0
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise UserError("setup: this changes the configuration of Codex, so it asks first: run it in a "
+                            "terminal, or say --yes")
+        if input("\nAdd it? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("Nothing was changed.")
+            return 0
+    target.parent.mkdir(parents=True, exist_ok=True)
+    previous = target.read_text(encoding="utf-8") if target.exists() else ""
+    if previous:
+        shutil.copy2(target, target.with_name("default.rules.bak"))
+    with target.open("a", encoding="utf-8") as handle:
+        handle.write(("\n" if previous and not previous.endswith("\n") else "") + CODEX_RULE + "\n")
+    print(f"added to {target}. Start Codex again.")
+    return 0
+
 
 def upgrade_command(args: argparse.Namespace) -> int:
     """Say whether a newer release exists and, unless --check, install it with that release's get.sh."""
@@ -2037,6 +2105,11 @@ def command_parser() -> argparse.ArgumentParser:
     scope_argument(rename_parser)
     rename_parser.add_argument("old", help="its current name")
     rename_parser.add_argument("new", help="the new name")
+
+    setup_parser = sub.add_parser("setup", help="set up a client so that filo works in it (codex: let `filo send` out of its sandbox)")
+    setup_parser.add_argument("target", choices=["codex"], help="the client to set up")
+    setup_parser.add_argument("-y", "--yes", action="store_true", help="do not ask before changing its configuration")
+    setup_parser.add_argument("-n", "--dry-run", action="store_true", help="show what would change and change nothing")
 
     upgrade_parser = sub.add_parser("upgrade", help="install the newest release, if this filo came from get.sh")
     upgrade_parser.add_argument("--check", action="store_true", help="only say whether a newer release exists")
@@ -2273,6 +2346,8 @@ def main(argv: list[str] | None = None) -> int:
             return leave(args)
         if args.command == "rename":
             return rename(args)
+        if args.command == "setup":
+            return setup_command(args)
         if args.command == "upgrade":
             return upgrade_command(args)
         if args.command == "who":
