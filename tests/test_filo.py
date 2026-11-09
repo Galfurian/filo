@@ -1242,6 +1242,7 @@ class InstallerTests(unittest.TestCase):
             "FILO_AGENTS_SKILLS": str(self.agents),
             "FILO_AGY_SKILLS": str(self.agy),
             "FILO_OPENCODE_DIR": str(self.opencode),
+            "CODEX_HOME": str(root / "codex-home"),
         }
 
     def tearDown(self) -> None:
@@ -1256,6 +1257,14 @@ class InstallerTests(unittest.TestCase):
 
     def uninstall(self, *args: str) -> subprocess.CompletedProcess[str]:
         return self.run_script("uninstall.sh", *args)
+
+    def test_install_says_to_set_up_codex_only_when_codex_is_there(self) -> None:
+        self.assertNotIn("filo setup codex", self.install().stdout)
+        Path(self.environment["CODEX_HOME"]).mkdir()
+        out = self.install()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("filo setup codex", out.stdout)
+        self.assertEqual(list(Path(self.environment["CODEX_HOME"]).iterdir()), [])    # and it touches nothing there
 
     def test_install_is_idempotent_and_uninstall_removes_only_its_own_links(self) -> None:
         self.agents.mkdir()
@@ -3060,3 +3069,63 @@ class BootTests(RuntimeCase):
         self.assertIn("filo register --as <client>", self.boot())
         bad = self.msg("boot", "--client", "not a name!")
         self.assertNotEqual(bad.returncode, 0)
+
+
+class SetupCodexTests(RuntimeCase):
+    """`filo setup codex` adds the rule that lets `filo send` out of the Codex sandbox, and only after asking."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.codex = self.root / "codex-home"
+        self.rules = self.codex / "rules" / "default.rules"
+        self.environment["CODEX_HOME"] = str(self.codex)
+
+    def test_it_adds_the_rule_once_and_keeps_what_was_there(self) -> None:
+        self.rules.parent.mkdir(parents=True)
+        self.rules.write_text('prefix_rule(pattern=["git", "status"], decision="allow")', encoding="utf-8")    # no newline
+        done = self.msg("setup", "codex", "--yes")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        lines = self.rules.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[0], 'prefix_rule(pattern=["git", "status"], decision="allow")')
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[1].startswith('prefix_rule(pattern=["filo", "send"], decision="allow"'))
+        self.assertEqual((self.rules.parent / "default.rules.bak").read_text(encoding="utf-8"),
+                         'prefix_rule(pattern=["git", "status"], decision="allow")')
+        again = self.msg("setup", "codex", "--yes")
+        self.assertIn("nothing to do", again.stdout)
+        self.assertEqual(len(self.rules.read_text(encoding="utf-8").splitlines()), 2)
+
+    def test_it_creates_the_file_and_does_not_ask_for_a_dry_run(self) -> None:
+        dry = self.msg("setup", "codex", "--dry-run")
+        self.assertEqual(dry.returncode, 0, dry.stderr)
+        self.assertIn("Dry run", dry.stdout)
+        self.assertFalse(self.codex.exists())
+        self.assertEqual(self.msg("setup", "codex", "--yes").returncode, 0)
+        self.assertTrue(self.rules.is_file())
+
+    def test_it_does_not_change_anything_without_a_yes_when_nobody_can_answer(self) -> None:
+        refused = self.msg("setup", "codex")
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("asks first", refused.stderr)
+        self.assertFalse(self.codex.exists())
+
+    def test_a_rule_written_another_way_or_commented_out_is_told_apart(self) -> None:
+        self.rules.parent.mkdir(parents=True)
+        self.rules.write_text('# prefix_rule(pattern=["filo", "send"], decision="allow")\n', encoding="utf-8")
+        self.assertNotIn("nothing to do", self.msg("setup", "codex", "--dry-run").stdout)
+        self.rules.write_text('prefix_rule(\n    decision = "allow",\n    pattern = ["filo", "send"],\n)\n', encoding="utf-8")
+        self.assertIn("nothing to do", self.msg("setup", "codex", "--dry-run").stdout)
+        self.rules.write_text('prefix_rule(pattern=["filo", "send"], decision="prompt")\n', encoding="utf-8")
+        self.assertNotIn("nothing to do", self.msg("setup", "codex", "--dry-run").stdout)
+
+    def test_register_in_the_sandbox_warns_until_the_rule_is_there(self) -> None:
+        env = {"CODEX_THREAD_ID": "cccc3333-cccc-4ccc-8ccc-cccccccccccc", "CODEX_SANDBOX_NETWORK_DISABLED": "1"}
+        warned = self.msg("register", "--as", "codex", env=env)
+        self.assertIn("filo setup codex", warned.stdout)
+        as_json = json.loads(self.msg("register", "--as", "codex", "--json", env=env).stdout)
+        self.assertIn("filo setup codex", as_json["warning"])
+        self.assertEqual(self.msg("setup", "codex", "--yes").returncode, 0)
+        quiet = self.msg("register", "--as", "codex", env=env)
+        self.assertNotIn("warning", quiet.stdout)
+        outside = self.msg("register", "--as", "codex", env={"CODEX_THREAD_ID": "cccc3333-cccc-4ccc-8ccc-cccccccccccc"})
+        self.assertNotIn("warning", outside.stdout)

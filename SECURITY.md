@@ -67,6 +67,13 @@ checkout, so what runs is what is in the checkout.
 copies nothing, changes no permissions and never overwrites a file it did not create.
 `uninstall.sh` removes only the links that point into the checkout.
 
+**`filo setup codex`.** It is the one command that writes to the configuration of another program: it adds a
+line to `~/.codex/rules/default.rules` (or `$CODEX_HOME/rules`) that lets `filo send`, and no other command, run
+outside the sandbox of Codex without asking. It shows the line first, asks (`--yes` skips that), copies the file to
+`default.rules.bak` and adds nothing twice. The installer only says that it exists. The rule widens what a
+sandboxed Codex can do by exactly one thing, sending a message to an agent of the same user on this machine, which
+filo allows anyone running as that user to do anyway. An agent is told not to run it.
+
 **The network.** Messages never leave the machine. The one thing in filo that uses the
 network is `filo upgrade`, plus the look for a new version that `FILO_CHECK_UPDATES=1`
 turns on (a `HEAD` request for `/releases/latest`, at most once a day, answer kept in

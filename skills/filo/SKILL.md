@@ -105,5 +105,6 @@ listener or for a registered name that is not yours, and stop its Monitor). Open
   `filo upgrade` runs a script downloaded from the network: the user runs it, you do not.
 - Inside the Codex sandbox sockets are blocked. To a listener `send` leaves a file, which is normal
   and needs no approval. A registered session has no listener: if `send` says `this sandbox cannot
-  connect to sockets`, the recipient is not down. Ask the user to allow `filo send` outside the
-  sandbox (`filo boot` shows the rule), and do not retry in the sandbox.
+  connect to sockets`, the recipient is not down. Tell the user to run `filo setup codex` and start
+  Codex again, and do not retry in the sandbox. Do not run it yourself: it changes the configuration
+  of Codex. `filo register` warns about the same thing.

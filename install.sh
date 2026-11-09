@@ -58,6 +58,9 @@ links | while IFS="$tab" read -r what target source required command; do
     esac
 done
 
+if [ -d "${CODEX_HOME:-$HOME/.codex}" ]; then
+    printf '\nCodex found. Its sandbox refuses every Unix socket, so `filo send` cannot reach a registered\nsession from it. If you have not done it yet, run `filo setup codex` once: it shows what it\nchanges, and asks first. This script does not touch the configuration of Codex.\n'
+fi
 case ":$PATH:" in
     *":$bin_dir:"*) ;;
     *) printf '\nNote: %s is not in your PATH, so the command `filo` will not be found.\n' "$bin_dir" ;;

@@ -121,6 +121,7 @@ filo leave --name claude                    # a registered session or a listener
 filo profiles                               # the roles you can join as
 filo profile manager                        # print one
 filo boot                                   # how this client connects (what /filo runs first)
+filo setup codex                            # let `filo send` out of the Codex sandbox (asks first)
 
 filo upgrade --check                        # is there a newer release? (the only command that uses the network)
 filo upgrade                                # install it, if this filo came from get.sh
@@ -309,15 +310,26 @@ the path and whatever the config (`network_access` does not change it); only ful
 filo works around it where it can: a sandboxed sender leaves the message in the spool of a **listener**,
 which delivers it within half a second. A **registered** session (Claude with an inbox socket, Codex,
 agy) has no listener and no spool: it is reached through a socket, so `filo send` from inside the
-sandbox fails with `this sandbox cannot connect to sockets`. Run it outside the sandbox, without full
-access for everything, with a rule that Codex reads at startup, in `~/.codex/rules/default.rules`:
+sandbox fails with `this sandbox cannot connect to sockets`. The way out is a rule that Codex reads when it
+starts, which lets `filo send`, and only that command, run outside the sandbox without asking:
+
+```
+filo setup codex      # shows what it adds to ~/.codex/rules/default.rules, and asks first
+```
+
+then start Codex again. `--dry-run` shows it and changes nothing, `--yes` does not ask, the file is
+copied to `default.rules.bak` first, and running it twice adds nothing. The line it adds is:
 
 ```
 prefix_rule(pattern=["filo", "send"], decision="allow", justification="filo send needs a Unix socket, which the sandbox blocks")
 ```
 
-`allow` runs that command outside the sandbox without asking; `filo send` is the only one that needs it.
-Start the Codex session again after adding it.
+`filo send` can only write to another agent of the same user on this machine, which is what filo
+does anyway; `filo who` and the other commands run in the sandbox as before. It is your decision, not
+filo's: nothing in filo writes to the configuration of Codex but this command, and an agent should not
+run it. `install.sh` says to run it when it finds `~/.codex` (or `$CODEX_HOME`), and `filo register` in
+a sandboxed Codex warns until the rule is there. filo finds the rule by reading the `*.rules` files, so
+a rule that Codex gets from somewhere else is not seen and the warning is then a false alarm.
 
 **A listener that outlives its Monitor.** A Claude Monitor ends after at most 30 minutes. If the
 listener were the Monitor, each end would tell every other session that it left, and each
