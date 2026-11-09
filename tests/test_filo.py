@@ -1699,7 +1699,9 @@ class SessionScopeTests(RuntimeCase):
     def test_a_sandbox_that_cannot_connect_is_blamed_for_a_registered_session_not_called_down(self) -> None:
         [directory] = [path for path in self.runtime.iterdir() if path.is_dir()]
         socket_file = directory / "worker.sock"
-        socket_file.write_text("", encoding="utf-8")
+        stale = socket.socket(socket.AF_UNIX)    # a socket that nobody listens on, and that may not be connected to
+        self.addCleanup(stale.close)
+        stale.bind(str(socket_file))
         socket_file.chmod(0)    # a connect that the system refuses, as the Codex sandbox does for any socket
         try:
             sent = self.msg("send", "--to", "worker", "--from", "boss", "--message", "hi")
