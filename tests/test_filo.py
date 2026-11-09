@@ -1696,6 +1696,22 @@ class SessionScopeTests(RuntimeCase):
         self.assertIn(f"seen in {self.scope.resolve()}", lost.stderr)
         self.assertIn("filo who --all", lost.stderr)
 
+    def test_a_sandbox_that_cannot_connect_is_blamed_for_a_registered_session_not_called_down(self) -> None:
+        [directory] = [path for path in self.runtime.iterdir() if path.is_dir()]
+        socket_file = directory / "worker.sock"
+        stale = socket.socket(socket.AF_UNIX)    # a socket that nobody listens on, and that may not be connected to
+        self.addCleanup(stale.close)
+        stale.bind(str(socket_file))
+        socket_file.chmod(0)    # a connect that the system refuses, as the Codex sandbox does for any socket
+        try:
+            sent = self.msg("send", "--to", "worker", "--from", "boss", "--message", "hi")
+        finally:
+            socket_file.chmod(0o600)
+        self.assertEqual(sent.returncode, 1)
+        self.assertIn("this sandbox cannot connect to sockets", sent.stderr)
+        self.assertIn("registered session", sent.stderr)
+        self.assertNotIn("is not connected", sent.stderr)
+
     def test_a_registered_session_sends_from_a_worktree_without_saying_where_to(self) -> None:
         sent = self.msg("send", "--to", "boss", "--from", "worker", "--message", "hi", scope=self.worktree, env=self.me)
         self.assertEqual(sent.returncode, 0, sent.stderr)
@@ -3022,6 +3038,7 @@ class BootTests(RuntimeCase):
         text = self.boot("--name", "w2", CODEX_THREAD_ID="t-1")
         self.assertIn("filo register --as codex --name w2", text)
         self.assertNotIn("filo watch", text)
+        self.assertIn('prefix_rule(pattern=["filo", "send"], decision="allow"', text)
 
     def test_claude_with_an_inbox_socket_registers(self) -> None:
         text = self.boot(CLAUDECODE="1", CLAUDE_CODE_MESSAGING_SOCKET="/tmp/x")
