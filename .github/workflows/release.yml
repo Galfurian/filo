@@ -42,7 +42,7 @@ jobs:
           if grep -q '@VERSION@\|@SHA256@' get.sh; then echo "get.sh still has a placeholder"; exit 1; fi
           sh -n get.sh
           sha256sum "filo-$version.tar.gz" get.sh > SHA256SUMS
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       - name: Sign the archive and get.sh
         run: |
           cosign sign-blob --yes --bundle "filo-${GITHUB_REF_NAME#v}.tar.gz.sigstore.json" "filo-${GITHUB_REF_NAME#v}.tar.gz"
