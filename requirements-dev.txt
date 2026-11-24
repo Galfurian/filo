@@ -62,9 +62,9 @@ ast-serialize==0.13.1 \
     --hash=sha256:f8b17e2921e56621bcb46792bd3e0b82ca3b85de78d5936e7b8174ba1758b0aa \
     --hash=sha256:fb8021f4dc3296de18737e3b8b34994411da725374d74a0b9eb32a738f2a23d0
     # via mypy
-exceptiongroup==1.3.1 ; python_full_version < '3.11' \
-    --hash=sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219 \
-    --hash=sha256:a7a39a3bd276781e98394987d3a5701d0c4edffb633bb7a5144577f82c773598
+exceptiongroup==1.3.2 ; python_full_version < '3.11' \
+    --hash=sha256:41c6a70dfec22050d3d8b43386b059a4dc0bca3f3d40a40971cb206fff1785af \
+    --hash=sha256:ca82e69f0cb535fbde934885744b67669a3efddd50fe7bc00d3398839fcaddec
     # via hypothesis
 hypothesis==6.168.5 ; python_full_version < '3.11' \
     --hash=sha256:01a4d3773f285e75551eeef12df058e6316b666bcc3ec187c5eb52a893fbb015 \
